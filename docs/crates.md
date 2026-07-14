@@ -268,13 +268,15 @@ The facade may provide these features:
 
 ```toml
 [features]
-default = ["crossterm", "widgets"]
+default = ["crossterm"]
 crossterm = ["dep:yatui-backend-crossterm"]
-widgets = ["dep:yatui-widgets"]
 macros = ["dep:yatui-macros"]
 test-utils = ["dep:yatui-test"]
 serde = ["yatui-core/serde", "yatui-text/serde"]
 ```
+
+The `widgets`, `macros`, `test-utils`, and `serde` features are introduced only
+when their corresponding crates or implementations exist.
 
 Lower-level crates should have empty or minimal default features. Backends are
 separate crates rather than a growing collection of features in

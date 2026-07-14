@@ -233,6 +233,9 @@ without a real terminal.
 
 ### Milestone 3: Terminal Contract And Backend
 
+Status: initial implementation complete. PTY compatibility and Unix job-control
+validation remain part of stabilization.
+
 Deliver:
 
 - `yatui-terminal`

@@ -7,8 +7,19 @@ runtime behavior, and widgets.
 
 The project is in its initial implementation phase. The current code provides
 shared core types, Unicode grapheme measurement, cell buffers, clipped drawing,
-surface composition, transactional frame diffing, and a facade crate. The
-remaining subsystems are developed incrementally.
+surface composition, transactional frame diffing, normalized terminal events,
+RAII terminal sessions, and a Crossterm backend. The remaining subsystems are
+developed incrementally.
+
+## Features
+
+The `crossterm` feature is enabled by default and provides the Crossterm
+terminal backend. Disable default features when integrating another backend:
+
+```toml
+[dependencies]
+yatui = { version = "0.1.0", default-features = false }
+```
 
 ## Design
 

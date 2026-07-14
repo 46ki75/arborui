@@ -51,7 +51,6 @@ pub enum TerminalEvent {
     Resize(Size),
     FocusGained,
     FocusLost,
-    CapabilityResponse(CapabilityResponse),
 }
 ```
 
