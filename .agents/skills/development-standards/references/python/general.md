@@ -4,6 +4,19 @@ Org-wide convention for any Python project. The reference implementation is the
 `46ki75/anthropic-course` repository — places where it has not caught up with this
 standard yet (no `justfile`, flat `src` layout) are called out below.
 
+## Contents
+
+- [Use uv with workspaces](#use-uv-with-workspaces-declare-tooling-once-at-the-root)
+- [Pin the interpreter](#pin-the-interpreter-with-python-version)
+- [Package layout](#package-layout)
+- [Lint and format](#lint-and-format-with-ruff)
+- [Type checking](#type-check-with-pyright-strict-mode)
+- [Logging](#logging)
+- [Testing](#testing-with-pytest)
+- [Task runner](#task-runner)
+- [CI](#ci)
+- [Gitignore baseline](#gitignore-baseline)
+
 ## Use uv with workspaces, declare tooling once at the root
 
 Every Python repo uses [uv](https://docs.astral.sh/uv/) as the package and
@@ -16,6 +29,15 @@ Rust side: one place to bump tool versions, zero drift between packages.
 ### Root `pyproject.toml`
 
 ```toml
+[project]
+name = "foo-workspace"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = []
+
+[tool.uv]
+package = false
+
 [tool.uv.workspace]
 members = ["packages/*"]
 
@@ -62,8 +84,9 @@ build-backend = "uv_build"
 - Dev tooling (`ruff`, `pyright`, `pytest`) lives **only** in the root
   `[dependency-groups]`. A member re-declaring its own `pytest` pin is drift —
   remove it.
-- Runtime dependencies live in the member's `[project.dependencies]`, never at
-  the root. The root `pyproject.toml` is workspace plumbing, not a package.
+- Runtime dependencies live in the member's `[project.dependencies]`. The root
+  is a non-buildable uv project (`package = false`) whose dependencies stay
+  empty unless the root itself becomes an application.
 - Invoke every tool through `uv run` (`uv run pytest`, `uv run ruff check .`) so
   it executes inside the workspace venv. Never rely on globally installed tools.
 
@@ -112,13 +135,18 @@ artifact — the package boundary is the import name.
 
 Course-work and experiment repos may use flat modules directly under `src/`, with
 pytest's `pythonpath` shim wiring imports up (this is what `anthropic-course`
-does):
+does). Keep this configuration at the workspace root so pytest loads it together
+with the shared markers and safety options:
 
 ```toml
-# member pyproject.toml
+# root pyproject.toml
 [tool.pytest.ini_options]
-testpaths = ["tests"]
-pythonpath = ["src"]
+testpaths = ["packages"]
+pythonpath = ["packages/foo-course/src"]
+markers = [
+    "live: hits real services, costs money, requires secrets",
+]
+addopts = '-m "not live"'
 ```
 
 Pyright needs the matching hint in the **root** `pyproject.toml`, since the shim
@@ -132,9 +160,10 @@ executionEnvironments = [
 ]
 ```
 
-The flat variant trades a `[build-system]` table for two config shims and
-per-package test invocation. The moment a module needs to be imported from
-another package, switch to the packaged layout — do not deepen the shims.
+The flat variant trades a `[build-system]` table for two root-level config
+hints. Add each flat member's `src` path to the root lists. The moment a module
+needs to be imported from another package, switch to the packaged layout — do
+not deepen the shims.
 
 ## Lint and format with ruff
 
@@ -288,6 +317,7 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
+      - uses: extractions/setup-just@v3
       - run: uv sync --frozen
       - run: just fmt-check
       - run: just lint
@@ -300,6 +330,7 @@ jobs:
       - uses: astral-sh/setup-uv@v8.1.0
         with:
           enable-cache: true
+      - uses: extractions/setup-just@v3
       - run: uv sync --frozen
       - run: just test
 ```

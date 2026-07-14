@@ -13,13 +13,13 @@ description: >
   inheritance, MSRV, `just`, coverage, test tiers, Axum+utoipa,
   published-crate conventions, async-graphql), Python (uv workspaces,
   `src` layout, ruff, pyright strict, pytest tiers), TypeScript/Node
-  (tsconfig, project references, npm scripts), Terraform (workspaces,
+  (tsconfig, multi-context configs, npm scripts), Terraform (workspaces,
   backend, naming). Only Bun is a stub — invoke anyway so the user
   defines the convention rather than getting an improvised one.
 license: MIT
 metadata:
   author: "Ikuma Yamashita"
-  version: "0.5.0"
+  version: "0.6.0"
 ---
 
 # Development Standards
@@ -31,12 +31,13 @@ reference that matches the task, not the whole tree.
 
 ### Cross-cutting — `references/general/`
 
-| File                | When to read                                                                                                                                                                                                                               |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `git-repository.md` | New repo setup, configuring `.editorconfig`, `markdownlint-cli2`, pnpm as the default package manager, lefthook git hooks (file-list template convention, Claude Code `PostToolUse` integration), baseline layout, editor recommendations. |
+- `git-repository.md`: New repo setup, `.editorconfig`,
+  `markdownlint-cli2`, pnpm, lefthook git hooks, Claude Code `PostToolUse`
+  integration, and editor recommendations.
 
-Commit-message conventions live in the separate `conventional-commits`
-skill — defer there, not here.
+Commit-message conventions are not defined by this skill. Follow the current
+repository's contributor instructions, or upstream Conventional Commits when
+the repository explicitly adopts it.
 
 ### Rust — `references/rust/`
 
@@ -55,9 +56,9 @@ skill — defer there, not here.
 
 ### TypeScript — `references/typescript/`
 
-| File         | When to read                                                                                                                                          |
-| ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `general.md` | Any TypeScript project: `tsconfig.json` baseline, project references for multi-context packages, inline type-only imports, ESLint/Prettier/Stylelint. |
+- `general.md`: Any TypeScript project: `tsconfig.json` baseline, separate
+  configs for multi-context packages, inline type-only imports, and
+  ESLint/Prettier/Stylelint.
 
 ### Node.js — `references/nodejs/`
 
@@ -93,9 +94,9 @@ laundering a one-off decision into apparent policy. Instead:
 
 ## When NOT to invoke
 
-- General programming or library tutorials — use language- or library-
-  specific skills (`mcp-knowledge`, `ag-ui-knowledge`, `rust-toasty`,
-  `conventional-commits`) or upstream docs.
+- General programming or library tutorials — use an available language- or
+  library-specific skill (for example `mcp-knowledge` or `ag-ui-knowledge`)
+  or upstream docs.
 - Debugging business logic.
 - Reviewing changes that do not touch tooling, project layout, or the
   architectural seams covered in `references/`.

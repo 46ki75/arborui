@@ -38,8 +38,8 @@ Terraform ≥1.10):
 terraform {
   backend "s3" {
     bucket               = "shared-<org>-<repo>-s3-bucket-terraform-tfstate"
-    workspace_key_prefix = "<component>"
-    key                  = "terraform.tfstate"
+    workspace_key_prefix = "env"
+    key                  = "<component>/terraform.tfstate"
     region               = "ap-northeast-1"
     encrypt              = true
     use_lockfile         = true
@@ -47,9 +47,9 @@ terraform {
 }
 ```
 
-`workspace_key_prefix` namespaces state per root config (`"aws"`,
-`"github"`) inside one shared tfstate bucket, so multiple root configs in
-the same or sibling repos don't collide.
+The component in `key` namespaces every root config (`"aws"`, `"github"`)
+inside one shared tfstate bucket, including Terraform's special `default`
+workspace. `workspace_key_prefix` then separates non-default environments.
 
 Alternative for a small, single-root-config repo (e.g. a repo-admin-only
 config with no application infrastructure): **HCP Terraform Cloud** as the
@@ -62,7 +62,7 @@ terraform {
     hostname     = "app.terraform.io"
     workspaces {
       project = "<repo>"
-      name    = "<repo>"
+      tags = ["<repo>"]
     }
   }
 }
@@ -145,18 +145,19 @@ provider:
   with `dependabot.yml`'s ecosystem labels.
 - `github_repository_ruleset` for branch protection (required status
   checks against the default branch) **and** for release-tag protection —
-  a second ruleset locking `refs/tags/v*` against creation, update, or
-  deletion by anyone except an admin bypass actor:
+  a second ruleset locking `refs/tags/v*` and `refs/tags/*-v*` against
+  creation, update, or deletion by anyone except an admin bypass actor:
 
   ```hcl
   resource "github_repository_ruleset" "protect_release_tags" {
     name        = "protect-release-tags"
+    repository  = "<repo>"
     target      = "tag"
     enforcement = "active"
 
     conditions {
       ref_name {
-        include = ["refs/tags/v*"]
+        include = ["refs/tags/v*", "refs/tags/*-v*"]
         exclude = []
       }
     }
@@ -169,7 +170,6 @@ provider:
     }
 
     bypass_actors {
-      actor_id    = 5 # organization admin role
       actor_type  = "OrganizationAdmin"
       bypass_mode = "always"
     }
@@ -211,9 +211,12 @@ on:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        root: [terraform]
     defaults:
       run:
-        working-directory: terraform
+        working-directory: ${{ matrix.root }}
     steps:
       - uses: actions/checkout@v4
       - uses: hashicorp/setup-terraform@v3
@@ -221,6 +224,10 @@ jobs:
       - run: terraform init -backend=false
       - run: terraform validate
 ```
+
+For a multi-root repo, replace the single matrix entry with each root, for
+example `[terraform/aws, terraform/github]`. Each root is initialized and
+validated independently without duplicating the job.
 
 Gate an actual `terraform plan`/`apply` behind a GitHub Actions environment
 with required reviewers, the same live-tier gating pattern used for Rust

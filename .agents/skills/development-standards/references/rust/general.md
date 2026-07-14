@@ -1,6 +1,7 @@
 # Rust Generic Development Standards
 
-Org-wide convention for any Rust project. The HTTP-layer specifics live in [Rust Axum OpenAPI Web Server](https://www.notion.so/Rust-Axum-OpenAPI-Web-Server-35934608d5c9806c8eb8fa19a78efd7e?pvs=21).
+Org-wide convention for any Rust project. HTTP-layer specifics live in
+[`web-openapi.md`](web-openapi.md).
 
 ## Use Cargo workspaces, inherit everything from the root
 
@@ -16,6 +17,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
+version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -36,6 +38,7 @@ unwrap_used = "deny"
 ```toml
 [package]
 name = "foo-core"
+version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
@@ -222,7 +225,7 @@ Keep them in physically separate files so the split is obvious:
 ```
 crates/foo/tests/
   integration.rs   # hermetic, runs on every PR
-  live.rs          # #[ignore]'d, approval-required
+  live_api.rs      # #[ignore]'d, approval-required
 ```
 
 Gate live tests with the built-in `#[ignore]` attribute and a reason string. Default `cargo test` skips them; CI opts in with `-- --ignored`.[[1]](https://doc.rust-lang.org/cargo/commands/cargo-test.html)
@@ -230,10 +233,19 @@ Gate live tests with the built-in `#[ignore]` attribute and a reason string. Def
 ```rust
 #[test]
 #[ignore = "live: hits real API, requires API_KEY"]
-fn calls_live_api() { /* ... */ }
+fn live_calls_api() { /* ... */ }
 ```
 
-Use `#[cfg_attr(not(feature = "live-tests"), ignore)]` instead when the live tests pull in optional dependencies you don't want compiled by default.[[2]](https://stackoverflow.com/questions/48583049/run-additional-tests-by-using-a-feature-flag-to-cargo-test)
+When live tests use optional dependencies, gate the whole test or module with
+`#[cfg(feature = "live-tests")]` so those dependencies are not referenced in
+the default build. Keep `#[ignore]` as a second, explicit safety gate:
+
+```rust
+#[cfg(feature = "live-tests")]
+#[test]
+#[ignore = "live: hits real API, requires API_KEY"]
+fn live_calls_api() { /* ... */ }
+```
 
 Extend the `justfile` with live recipes:
 
@@ -251,6 +263,14 @@ coverage-live: test-live-cov
 ci-live: fmt-check lint test test-live
 ```
 
+If the tests use the optional `live-tests` feature shown above, add
+`--features live-tests` to both instrumented commands:
+
+```text
+cargo test --workspace --features live-tests -- --ignored
+cargo llvm-cov --no-report --workspace --features live-tests -- --ignored
+```
+
 CI wiring:
 
 - Default `just ci` runs hermetic tests only and gates PR merges.
@@ -260,11 +280,16 @@ Name any file or test that hits an external system with a `live_` prefix so tria
 
 ### Variant: tests co-located in one file
 
-The file-per-tier split above is the target shape, but the more commonly observed pattern in existing crates is a single test file with hermetic and `#[ignore = "live: ..."]` tests interleaved, relying on the `live_` name prefix alone for triage rather than a physical file split. That's an acceptable variant for a crate that only has a handful of live tests — split into `tests/live.rs` once a crate's live tests outgrow a quick `grep live_`.
+The file-per-tier split above is the target shape, but the more commonly observed pattern in existing crates is a single test file with hermetic and `#[ignore = "live: ..."]` tests interleaved, relying on the `live_` name prefix alone for triage rather than a physical file split. That's an acceptable variant for a crate that only has a handful of live tests — split into `tests/live_api.rs` once a crate's live tests outgrow a quick `grep live_`.
 
 ### Variant: gating by capability, not just "hits the network"
 
-For a crate whose "live" tests can also **mutate** a real third-party system (not just read from one), consider splitting the axis into `readonly` vs. `mutable` instead of (or in addition to) hermetic vs. live — two separate test binaries (e.g. `tests/integration_test_readonly.rs` / `tests/integration_test_mutable.rs`), gated by which credential env var is set rather than `#[ignore]`. State explicitly in the crate's contributor docs that mutable tests must not be run by an AI agent unsupervised. This is a sharper cut than hermetic/live when "live" also means "destructive."
+For a crate whose "live" tests can also **mutate** a real third-party system
+(not just read from one), split the axis into `readonly` vs. `mutable` test
+binaries. Keep the mutable binary's tests `#[ignore]`d and require a human to
+invoke it explicitly; a missing credential is not a safety gate. State in the
+contributor docs that mutable tests must not be run by an AI agent unsupervised.
+See `library.md` for the complete command pattern.
 
 ## Enforcement
 

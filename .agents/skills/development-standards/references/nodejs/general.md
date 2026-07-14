@@ -35,8 +35,8 @@ failure:
     "fmt.check": "prettier --check ./src",
     "lint": "eslint ./src",
     "lint.css": "stylelint \"src/**/*.{css,scss}\"",
-    "build.types": "tsc --emitDeclarationOnly --incremental false",
-    "check": "concurrently -g \"pnpm:fmt.check\" \"pnpm:lint\" \"pnpm:lint.css\" \"pnpm:build.types\"",
+    "typecheck": "tsc --noEmit",
+    "check": "concurrently -g \"pnpm:fmt.check\" \"pnpm:lint\" \"pnpm:lint.css\" \"pnpm:typecheck\"",
     "check.ci": "concurrently -g \"pnpm:check\" \"pnpm:test.unit\""
   }
 }
@@ -46,6 +46,10 @@ failure:
 what the CI workflow invokes. Keep both defined even if `check.ci` is
 currently just `check` plus tests — it gives CI one stable entry point to
 call regardless of how the fast/slow split evolves.
+
+For a published TypeScript package, define `build.types` as documented in
+`references/typescript/general.md` and include `"pnpm:build.types"` in the
+`check` command. Internal applications omit it.
 
 ## `package.json` in a pnpm workspace
 
@@ -83,7 +87,7 @@ response types a second time:
 ```json
 {
   "scripts": {
-    "generate:openapi": "openapi-typescript http://localhost:9000/api/v1/openapi.json -o src/openapi/schema.ts"
+    "generate.openapi": "openapi-typescript http://localhost:9000/api-docs/openapi.json -o src/openapi/schema.ts"
   },
   "dependencies": {
     "openapi-fetch": "^0.13.0"
@@ -108,10 +112,9 @@ silently absorbed.
   supports a range of Node runtimes.
 - Install pnpm via [`pnpm/action-setup`](https://github.com/pnpm/action-setup),
   then Node via `actions/setup-node` with `cache: "pnpm"`.
-- Split into separate jobs per concern (`lint`, `format-check`, `build`,
-  `test-unit`, `test-browser`, ...) rather than one job running every
-  script in sequence — a failing lint job shouldn't hide whether the build
-  still succeeds.
+- Run the package's `check.ci` entry point in one job by default. Its
+  `concurrently` command reports every concern even when one fails. Split out
+  browser tests or platform matrices only when they need a different runner.
 
 ```yaml
 name: CI
@@ -122,7 +125,7 @@ on:
   pull_request:
 
 jobs:
-  lint:
+  check:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -132,19 +135,7 @@ jobs:
           node-version: 22.x
           cache: "pnpm"
       - run: pnpm install --frozen-lockfile
-      - run: pnpm run lint
-
-  test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: pnpm/action-setup@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22.x
-          cache: "pnpm"
-      - run: pnpm install --frozen-lockfile
-      - run: pnpm run test.unit
+      - run: pnpm run check.ci
 ```
 
 This is the target shape. It is not universally implemented yet — at least

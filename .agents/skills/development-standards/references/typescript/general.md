@@ -34,8 +34,8 @@ instead; this file only covers the language and its tooling.
   Node-runtime code with no bundling step (e.g. a CLI, a Lambda handler
   compiled straight by `tsc`) — see `references/nodejs/general.md`.
 - `noEmit: true` is the norm because the bundler owns the actual build;
-  `tsc` runs as a separate, typecheck-only step (see _Type-only build
-  script_ below). A package that ships type declarations without a bundler
+  `tsc --noEmit` runs as a separate typecheck step. A package that ships type
+  declarations without a bundler
   (a library built with plain `tsc`) is the exception — set `noEmit: false`
   and `declaration: true` there instead.
 - `strict: true` is the floor for every project. Stricter flags
@@ -45,43 +45,19 @@ instead; this file only covers the language and its tooling.
   a genuinely new bar, not a codification of existing practice. Don't
   present it as required without confirming that first.
 
-## Project references for multi-context packages
+## Separate configs for multi-context packages
 
 A package that has more than one build context (app code bundled by Vite,
-Vite's own config file, a separate declaration-only library build) splits
-into multiple `tsconfig.*.json` files composed through TypeScript [project
-references](https://www.typescriptlang.org/docs/handbook/project-references.html),
-with a root `tsconfig.json` that only lists them:
-
-```json
-// tsconfig.json
-{
-  "files": [],
-  "references": [
-    { "path": "./tsconfig.app.json" },
-    { "path": "./tsconfig.node.json" }
-  ]
-}
-```
-
-```json
-// tsconfig.app.json — application source
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.app.tsbuildinfo",
-    "rootDir": "./src"
-  },
-  "include": ["src"]
-}
-```
+Vite's own config file, or a declaration-only library build) adds a small
+`tsconfig.*.json` for each extra context. Extend the baseline `tsconfig.json`
+directly and invoke each config explicitly; project references add composite
+build requirements that these small packages do not need.
 
 ```json
 // tsconfig.node.json — build tooling (vite.config.ts, etc.), a different runtime context
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "tsBuildInfoFile": "./node_modules/.tmp/tsconfig.node.tsbuildinfo",
     "module": "ESNext",
     "types": ["node"]
   },
@@ -89,16 +65,17 @@ with a root `tsconfig.json` that only lists them:
 }
 ```
 
-A published library adds a third file, `tsconfig.lib.json`, that extends
-`tsconfig.app.json` and flips to a declaration-only emit for the built
-package, excluding test/story files:
+A published library adds `tsconfig.lib.json`, extending the baseline and
+flipping to declaration-only emit for the built package while excluding
+test and story files:
 
 ```json
 // tsconfig.lib.json — the published build
 {
-  "extends": "./tsconfig.app.json",
+  "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": false,
+    "declaration": true,
     "emitDeclarationOnly": true,
     "outDir": "./lib-types"
   },
@@ -106,23 +83,33 @@ package, excluding test/story files:
 }
 ```
 
-Single-context packages (no separate build-tooling config, no library
-build) don't need this split — a flat `tsconfig.json` is correct until a
-second context actually appears. Don't pre-split a package that only has
-app code.
+Single-context packages need only `tsconfig.json`. For multiple contexts,
+run each relevant config from one package script; do not add a solution config
+or project-reference graph unless build performance demonstrates a need:
 
-### Type-only build script
+```json
+{
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.node.json"
+  }
+}
+```
 
-Expose the typecheck-only run as its own script, separate from the actual
+### Declaration build script
+
+When publishing declarations, expose their build as a separate script from the
 bundler build (naming convention: see `references/nodejs/general.md`):
 
 ```json
 {
   "scripts": {
-    "build.types": "tsc --emitDeclarationOnly --incremental false -p tsconfig.lib.json"
+    "build.types": "tsc -p tsconfig.lib.json"
   }
 }
 ```
+
+Published packages include `build.types` in their `check` script so the full
+CI gate verifies declaration emission as well as ordinary typechecking.
 
 ## Type-only imports: inline modifier, not a separate statement
 

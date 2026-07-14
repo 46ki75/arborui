@@ -58,13 +58,9 @@ Start with `EmptyMutation` / `EmptySubscription` for a read-only API; add
 `Mutation`/`Subscription` types only when the API actually needs them —
 don't scaffold empty mutation/subscription surfaces speculatively.
 
-Build the schema once and cache it, the same `OnceCell` idiom used for the
-cached `axum::Router` in `web-openapi.md`:
-
-```rust
-static SCHEMA: tokio::sync::OnceCell<Schema<Query, EmptyMutation, EmptySubscription>> =
-    tokio::sync::OnceCell::const_new();
-```
+Build the schema once in the process entry point and place a clone in Axum
+state. `Schema` is already cheap to clone, so a separate global cache adds no
+value.
 
 ## Layering: Repository → Service → Resolver, with a translation stage
 
@@ -89,11 +85,12 @@ pub struct FooEntity { /* ... */ }
 pub struct Foo { /* ... */ }
 ```
 
-Repository traits follow the same `Arc<dyn FooRepository>` +
-`FooRepositoryStub` test-double pattern as `web-openapi.md` — nothing
-changes there.
+Repository traits use the same `Arc<dyn FooRepository>` plus
+`FooRepositoryStub` test-double pattern as `web-openapi.md`. Production and
+tests inject different implementations without changing the Service or
+Resolver types.
 
-## N+1 avoidance: lazy fields via `#[ComplexObject]`
+## Lazy fields and the N+1 tradeoff
 
 For a field that's expensive to compute and not always requested, use
 `#[async_graphql::ComplexObject]` to resolve it lazily, only when a query

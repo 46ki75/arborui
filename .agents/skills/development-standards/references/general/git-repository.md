@@ -1,5 +1,12 @@
 # Git Repository Standards
 
+## Contents
+
+- [EditorConfig](#create-editorconfig)
+- [Package manager](#package-manager-pnpm)
+- [Git hooks](#git-hooks-lefthook)
+- [Markdown linting](#markdown-linting-with-markdownlint-cli2)
+
 ## Create `.editorconfig`
 
 ```ini
@@ -21,10 +28,8 @@ language is not JavaScript but which carry Node tooling (e.g.
 to npm or yarn because a repo happens to have their artifacts lying
 around.
 
-- Declare `"packageManager": "pnpm@<exact-version>+sha512.<integrity-hash>"`
-  in `package.json` — the full corepack integrity form, not just the bare
-  version. Run `corepack use pnpm@<version>` (or copy the hash from an
-  existing repo's `package.json`) rather than typing a bare version by hand.
+- Declare `"packageManager": "pnpm@<exact-version>"` in `package.json`.
+  Run `corepack use pnpm@<version>` rather than typing the version by hand.
 - Commit `pnpm-lock.yaml`; never `package-lock.json` or `yarn.lock`.
 - CI installs with `pnpm install --frozen-lockfile`.
 
@@ -44,16 +49,13 @@ standard npm lifecycle hook:
   },
   "devDependencies": {
     "lefthook": "^2.1.9"
-  },
-  "pnpm": {
-    "onlyBuiltDependencies": ["lefthook"]
   }
 }
 ```
 
-The `pnpm.onlyBuiltDependencies` entry is required — pnpm ≥9 denies native
-install scripts by default, and without this allowlist entry `lefthook
-install` silently never runs.
+The root `prepare` script installs the hook explicitly. Do not also allow a
+dependency lifecycle script for lefthook; that duplicates installation and
+grants unnecessary install-time execution.
 
 ### Single-package repos
 
@@ -275,7 +277,7 @@ Pin `markdownlint-cli2` as a dev dependency and expose a `lint` script:
 
 ```json
 {
-  "packageManager": "pnpm@10.33.0",
+  "packageManager": "pnpm@11.13.0",
   "scripts": {
     "lint": "markdownlint-cli2 \"**/*.md\""
   },
@@ -285,8 +287,8 @@ Pin `markdownlint-cli2` as a dev dependency and expose a `lint` script:
 }
 ```
 
-(Pin `packageManager` to whatever the current pnpm release is — the
-field requires an exact version.)
+(Pin `packageManager` to the current approved pnpm release — the field requires
+an exact version.)
 
 The glob in the script is the lint **target**; `ignores` in the YAML
 is the exclusion list. Keep both — narrowing the glob to skip a

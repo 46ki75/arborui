@@ -76,8 +76,10 @@ main crate's if it doesn't.
 ## Independent versioning inside one workspace
 
 When workspace members version independently (the macro/types/webhooks
-crates don't necessarily bump on the same cadence as the main crate), tag
-the main crate bare and prefix every other crate's tag with its name:
+crates don't necessarily bump on the same cadence as the main crate), do not
+inherit `version` from `[workspace.package]`. Give each member its own
+`package.version`; the rest of the workspace inheritance rules still apply.
+Tag the main crate bare and prefix every other crate's tag with its name:
 
 ```text
 v0.27.0            # main crate release
@@ -131,7 +133,8 @@ pattern is a manual release, walked through via a PR template checklist:
 ```
 
 The actual enforcement isn't CI — it's a Terraform-managed GitHub ruleset
-that locks `refs/tags/v*` against creation, update, or deletion by anyone
+that locks both main-crate `refs/tags/v*` and independently versioned
+`refs/tags/*-v*` releases against creation, update, or deletion by anyone
 but an admin (see `references/terraform/general.md` § _GitHub repository
 administration as Terraform_). That combination — human-run checklist for
 the happy path, ruleset for the thing that would actually cause damage if
@@ -145,8 +148,8 @@ alongside this checklist rather than instead of the ruleset.
 needs secrets. A library whose integration tests exercise a real
 third-party API that can also be **mutated** (not just read) needs a
 sharper cut: split by `readonly` vs. `mutable` instead, as two separate
-test binaries gated by which credential is present rather than by
-`#[ignore]`:
+test binaries. Keep mutable tests `#[ignore]`d so an ordinary `cargo test`
+cannot run them:
 
 ```text
 tests/
@@ -158,9 +161,10 @@ tests/
 
 ```rust
 #[tokio::test]
+#[ignore = "mutable: changes the real FOO account; run only with human approval"]
 async fn search() -> Result<(), foo::Error> {
     dotenvy::dotenv().ok();
-    let api_key = std::env::var("FOO_API_KEY_READONLY").unwrap();
+    let api_key = std::env::var("FOO_API_KEY_MUTABLE").unwrap();
     let client = foo::Client::new(api_key);
     // ...
 }
@@ -168,8 +172,12 @@ async fn search() -> Result<(), foo::Error> {
 
 State the rule explicitly in the crate's contributor docs, not just in
 CI config: **mutable integration tests must not be run by an AI agent**
-unsupervised — CI should run only the readonly tier automatically, with
-the mutable tier run manually by a human before a release.
+unsupervised. CI runs the readonly tier automatically. A human runs the
+mutable tier explicitly before a release with:
+
+```bash
+cargo test --test integration_test_mutable -- --ignored
+```
 
 ## Dual agent docs: `AGENTS.md` real, `CLAUDE.md` a symlink to the README
 
