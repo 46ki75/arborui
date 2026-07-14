@@ -1,0 +1,42 @@
+[package]
+name = "arborui"
+description = "A Rust-native terminal user interface library"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
+
+[features]
+default = ["crossterm"]
+crossterm = ["dep:arborui-backend-crossterm"]
+
+[dependencies]
+arborui-backend-crossterm = { workspace = true, optional = true }
+arborui-core = { workspace = true }
+arborui-layout = { workspace = true }
+arborui-render = { workspace = true }
+arborui-runtime = { workspace = true }
+arborui-terminal = { workspace = true }
+arborui-text = { workspace = true }
+arborui-ui = { workspace = true }
+arborui-widgets = { workspace = true }
+
+[dev-dependencies]
+criterion = { workspace = true }
+
+[[bench]]
+name = "stabilization"
+harness = false

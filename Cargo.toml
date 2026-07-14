@@ -10,24 +10,24 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 publish = ["crates-io"]
 authors = ["Ikuma Yamashita <me@ikuma.cloud>"]
-repository = "https://github.com/46ki75/yatui"
-homepage = "https://github.com/46ki75/yatui"
+repository = "https://github.com/46ki75/arborui"
+homepage = "https://github.com/46ki75/arborui"
 categories = ["command-line-interface"]
 keywords = ["terminal", "tui", "cli", "ui"]
 
 [workspace.dependencies]
 criterion = { version = "=0.7.0", default-features = false }
-yatui-core = { path = "crates/yatui-core", version = "=0.1.0" }
-yatui-backend-crossterm = { path = "crates/yatui-backend-crossterm", version = "=0.1.0" }
-yatui-render = { path = "crates/yatui-render", version = "=0.1.0" }
-yatui-runtime = { path = "crates/yatui-runtime", version = "=0.1.0" }
-yatui-layout = { path = "crates/yatui-layout", version = "=0.1.0" }
-yatui-terminal = { path = "crates/yatui-terminal", version = "=0.1.0" }
-yatui-text = { path = "crates/yatui-text", version = "=0.1.0" }
-yatui-ui = { path = "crates/yatui-ui", version = "=0.1.0" }
-yatui-widgets = { path = "crates/yatui-widgets", version = "=0.1.0" }
-yatui = { path = "crates/yatui", version = "=0.1.0" }
-yatui-test = { path = "crates/yatui-test", version = "=0.1.0" }
+arborui-core = { path = "crates/arborui-core", version = "=0.1.0" }
+arborui-backend-crossterm = { path = "crates/arborui-backend-crossterm", version = "=0.1.0" }
+arborui-render = { path = "crates/arborui-render", version = "=0.1.0" }
+arborui-runtime = { path = "crates/arborui-runtime", version = "=0.1.0" }
+arborui-layout = { path = "crates/arborui-layout", version = "=0.1.0" }
+arborui-terminal = { path = "crates/arborui-terminal", version = "=0.1.0" }
+arborui-text = { path = "crates/arborui-text", version = "=0.1.0" }
+arborui-ui = { path = "crates/arborui-ui", version = "=0.1.0" }
+arborui-widgets = { path = "crates/arborui-widgets", version = "=0.1.0" }
+arborui = { path = "crates/arborui", version = "=0.1.0" }
+arborui-test = { path = "crates/arborui-test", version = "=0.1.0" }
 
 [workspace.lints.rust]
 missing_docs = "warn"

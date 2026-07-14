@@ -2,7 +2,7 @@
 
 use libfuzzer_sys::fuzz_target;
 use unicode_segmentation::UnicodeSegmentation;
-use yatui_text::{TextBuffer, TextEdit, TextMovement, WidthPolicy, measure};
+use arborui_text::{TextBuffer, TextEdit, TextMovement, WidthPolicy, measure};
 
 fuzz_target!(|data: &[u8]| {
     let mut input = Input::new(data);

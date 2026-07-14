@@ -3,20 +3,20 @@
 ## Workspace
 
 ```text
-yatui/
+arborui/
   Cargo.toml
   crates/
-    yatui/
-    yatui-core/
-    yatui-text/
-    yatui-render/
-    yatui-layout/
-    yatui-terminal/
-    yatui-backend-crossterm/
-    yatui-ui/
-    yatui-runtime/
-    yatui-widgets/
-    yatui-test/
+    arborui/
+    arborui-core/
+    arborui-text/
+    arborui-render/
+    arborui-layout/
+    arborui-terminal/
+    arborui-backend-crossterm/
+    arborui-ui/
+    arborui-runtime/
+    arborui-widgets/
+    arborui-test/
 ```
 
 Crate boundaries represent ownership and dependency boundaries, not just file
@@ -29,16 +29,16 @@ boundary.
 `A -> B` means that crate A directly depends on crate B.
 
 ```text
-yatui-render            -> yatui-core, yatui-text
-yatui-layout            -> yatui-core
-yatui-terminal          -> yatui-core, yatui-render, yatui-text
-yatui-backend-crossterm -> yatui-core, yatui-render, yatui-terminal
-yatui-ui                -> yatui-core, yatui-text, yatui-render, yatui-layout
-yatui-widgets           -> yatui-core, yatui-text, yatui-layout, yatui-ui
-yatui-runtime           -> yatui-core, yatui-ui, yatui-render, yatui-terminal
-yatui-test              -> yatui-core, yatui-text, yatui-ui, yatui-render,
-                           yatui-terminal, yatui-runtime
-yatui                    -> selected public crates
+arborui-render            -> arborui-core, arborui-text
+arborui-layout            -> arborui-core
+arborui-terminal          -> arborui-core, arborui-render, arborui-text
+arborui-backend-crossterm -> arborui-core, arborui-render, arborui-terminal
+arborui-ui                -> arborui-core, arborui-text, arborui-render, arborui-layout
+arborui-widgets           -> arborui-core, arborui-text, arborui-layout, arborui-ui
+arborui-runtime           -> arborui-core, arborui-ui, arborui-render, arborui-terminal
+arborui-test              -> arborui-core, arborui-text, arborui-ui, arborui-render,
+                           arborui-terminal, arborui-runtime
+arborui                    -> selected public crates
 ```
 
 Cycles are not permitted. Re-exporting a type does not justify reversing the
@@ -46,7 +46,7 @@ dependency direction.
 
 ## Crate Responsibilities
 
-### `yatui-core`
+### `arborui-core`
 
 Contains small, stable value types shared by other crates.
 
@@ -66,7 +66,7 @@ This crate does not contain cells, widgets, layout nodes, terminal I/O, or an
 application runtime. It should have very few dependencies. `no_std` support is
 desirable if it remains nearly free, but it is not a first-release gate.
 
-### `yatui-text`
+### `arborui-text`
 
 Owns Unicode segmentation, display width, wrapping, measurement, styled text,
 and editing data structures.
@@ -86,7 +86,7 @@ width
 
 It does not know about cells, escape sequences, layout trees, or widgets.
 
-### `yatui-render`
+### `arborui-render`
 
 Owns visual cells, grapheme storage, buffers, surfaces, clipping, composition,
 hit maps, frame patches, and prepared-frame transactions.
@@ -108,7 +108,7 @@ surface
 It accepts geometry and style but does not know about application messages,
 focus traversal, widgets, or terminal backend libraries.
 
-### `yatui-layout`
+### `arborui-layout`
 
 Owns library-facing layout types and the private Taffy adapter.
 
@@ -124,7 +124,7 @@ tree
 
 Taffy node IDs, styles, and errors must not appear in the public API.
 
-### `yatui-terminal`
+### `arborui-terminal`
 
 Defines terminal events, capabilities, desired terminal state, backend
 contracts, output outcomes, and session lifecycle.
@@ -144,7 +144,7 @@ transport
 It may re-export the render patch type used by `TerminalBackend`, but it does
 not own UI events, widgets, or the application loop.
 
-### `yatui-backend-crossterm`
+### `arborui-backend-crossterm`
 
 Implements `TerminalBackend` with Crossterm. Crossterm types remain inside this
 crate. It translates events, serializes frame patches, and manages platform
@@ -153,12 +153,12 @@ terminal modes.
 Additional backends should be separate crates, for example:
 
 ```text
-yatui-backend-termina
-yatui-backend-termwiz
-yatui-backend-ssh
+arborui-backend-termina
+arborui-backend-termwiz
+arborui-backend-ssh
 ```
 
-### `yatui-ui`
+### `arborui-ui`
 
 Owns ephemeral elements, retained identity, reconciliation, widget contracts,
 event routing, focus, hit testing, and invalidation.
@@ -180,7 +180,7 @@ widget
 
 This crate must work without a real terminal or application event loop.
 
-### `yatui-runtime`
+### `arborui-runtime`
 
 Owns the `Application` trait, commands, scheduler, event loop, event proxy,
 terminal orchestration, and shutdown behavior.
@@ -197,10 +197,10 @@ scheduler
 task
 ```
 
-The runtime depends on `yatui-ui`; `yatui-ui` never depends on the runtime.
+The runtime depends on `arborui-ui`; `arborui-ui` never depends on the runtime.
 The runtime does not depend on the standard widget crate.
 
-### `yatui-widgets`
+### `arborui-widgets`
 
 Contains the standard widget catalog. The first set is deliberately small:
 
@@ -218,12 +218,12 @@ text
 ```
 
 Widgets are controlled by default. Complex state such as editable text is
-represented by explicit state types from `yatui-text` or the application.
+represented by explicit state types from `arborui-text` or the application.
 
-Third-party widget crates should normally depend on `yatui-ui` and whichever
-lower-level crates they directly use, not on the `yatui` facade.
+Third-party widget crates should normally depend on `arborui-ui` and whichever
+lower-level crates they directly use, not on the `arborui` facade.
 
-### `yatui-test`
+### `arborui-test`
 
 Provides downstream application and widget test utilities:
 
@@ -234,10 +234,10 @@ clock
 frame
 ```
 
-Internal unit tests remain in their owning crates. `yatui-test` is a public
+Internal unit tests remain in their owning crates. `arborui-test` is a public
 headless harness, not a central location for all repository tests.
 
-### `yatui`
+### `arborui`
 
 The facade crate used by most applications. It contains minimal implementation
 code and re-exports selected APIs.
@@ -245,12 +245,12 @@ code and re-exports selected APIs.
 Example shape:
 
 ```rust
-pub use yatui_runtime::{AppRunner, Application, Command};
-pub use yatui_ui::{Element, Key};
-pub use yatui_widgets as widgets;
+pub use arborui_runtime::{AppRunner, Application, Command};
+pub use arborui_ui::{Element, Key};
+pub use arborui_widgets as widgets;
 
 #[cfg(feature = "crossterm")]
-pub use yatui_backend_crossterm::CrosstermBackend;
+pub use arborui_backend_crossterm::CrosstermBackend;
 ```
 
 ## Features
@@ -260,17 +260,17 @@ The facade initially provides one backend-selection feature:
 ```toml
 [features]
 default = ["crossterm"]
-crossterm = ["dep:yatui-backend-crossterm"]
+crossterm = ["dep:arborui-backend-crossterm"]
 ```
 
-`yatui-test` remains a separate development dependency so tests exercise an
+`arborui-test` remains a separate development dependency so tests exercise an
 explicit public boundary without adding test utilities to application builds.
 Potential `macros` and `serde` features are introduced only when their
 implementations exist.
 
 Lower-level crates should have empty or minimal default features. Backends are
 separate crates rather than a growing collection of features in
-`yatui-terminal`.
+`arborui-terminal`.
 
 ## Versioning And Publishing
 
@@ -288,13 +288,13 @@ edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
 authors = ["Ikuma Yamashita <me@ikuma.cloud>"]
-repository = "https://github.com/46ki75/yatui"
+repository = "https://github.com/46ki75/arborui"
 categories = ["command-line-interface"]
 keywords = ["terminal", "tui", "cli", "ui"]
 
 [workspace.dependencies]
-yatui-core = { path = "crates/yatui-core", version = "=0.1.0" }
-yatui-text = { path = "crates/yatui-text", version = "=0.1.0" }
+arborui-core = { path = "crates/arborui-core", version = "=0.1.0" }
+arborui-text = { path = "crates/arborui-text", version = "=0.1.0" }
 ```
 
 Patch releases within a `0.y` line contain compatible additions and fixes.
@@ -304,12 +304,12 @@ Rust 1.85.0 and is tested directly; it may increase only in a breaking release.
 
 Publish in topological dependency order:
 
-1. `yatui-core` and `yatui-text`
-2. `yatui-layout` and `yatui-render`
-3. `yatui-terminal` and `yatui-ui`
-4. `yatui-backend-crossterm`, `yatui-runtime`, and `yatui-widgets`
-5. `yatui-test`
-6. `yatui`
+1. `arborui-core` and `arborui-text`
+2. `arborui-layout` and `arborui-render`
+3. `arborui-terminal` and `arborui-ui`
+4. `arborui-backend-crossterm`, `arborui-runtime`, and `arborui-widgets`
+5. `arborui-test`
+6. `arborui`
 
 ## Boundary Review Checklist
 

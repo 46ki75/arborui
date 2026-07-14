@@ -71,5 +71,5 @@ jobs:
         if: ${{ inputs.publish }}
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-          YATUI_CRATES_IO_NAME_CONFIRMED: ${{ vars.YATUI_CRATES_IO_NAME_CONFIRMED }}
+          ARBORUI_CRATES_IO_NAME_CONFIRMED: ${{ vars.ARBORUI_CRATES_IO_NAME_CONFIRMED }}
         run: bash scripts/publish.sh --execute

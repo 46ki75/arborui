@@ -1,5 +1,5 @@
 [package]
-name = "yatui-fuzz"
+name = "arborui-fuzz"
 version = "0.0.0"
 edition = "2024"
 rust-version = "1.85"
@@ -11,9 +11,9 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "=0.4.13"
 unicode-segmentation = "=1.13.3"
-yatui-core = { path = "../crates/yatui-core" }
-yatui-render = { path = "../crates/yatui-render" }
-yatui-text = { path = "../crates/yatui-text" }
+arborui-core = { path = "../crates/arborui-core" }
+arborui-render = { path = "../crates/arborui-render" }
+arborui-text = { path = "../crates/arborui-text" }
 
 [workspace]
 

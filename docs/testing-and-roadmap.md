@@ -14,7 +14,7 @@
 
 Each crate owns tests for its contracts.
 
-### `yatui-text`
+### `arborui-text`
 
 - Grapheme segmentation
 - Combining sequences
@@ -27,7 +27,7 @@ Each crate owns tests for its contracts.
 - Selection replacement
 - Undo transaction grouping
 
-### `yatui-render`
+### `arborui-render`
 
 - Grapheme insertion and replacement
 - Overwriting starts and continuations
@@ -39,7 +39,7 @@ Each crate owns tests for its contracts.
 - Empty frame output
 - Full repaint generation
 
-### `yatui-layout`
+### `arborui-layout`
 
 - Integer rounding
 - Percentage dimensions
@@ -49,7 +49,7 @@ Each crate owns tests for its contracts.
 - Border and padding geometry
 - Resize invalidation
 
-### `yatui-ui`
+### `arborui-ui`
 
 - Keyed reconciliation
 - Duplicate key diagnostics
@@ -61,7 +61,7 @@ Each crate owns tests for its contracts.
 - Focus restoration after overlay removal
 - Invalidation escalation
 
-### `yatui-terminal`
+### `arborui-terminal`
 
 - Desired-state transitions
 - Idempotent restoration
@@ -116,7 +116,7 @@ and a weekly schedule run the targets with a pinned nightly toolchain.
 
 ## Headless Test API
 
-`yatui-test` exposes an application-level harness:
+`arborui-test` exposes an application-level harness:
 
 ```rust
 let mut app = TestApp::new(MyApp::default(), Size::new(80, 24));
@@ -225,7 +225,7 @@ Status: implemented.
 Deliver:
 
 - Workspace manifests
-- `yatui-core`
+- `arborui-core`
 - Initial geometry, color, style, and cursor types
 - Shared lint, formatting, MSRV, and documentation configuration
 
@@ -238,8 +238,8 @@ Status: implemented.
 
 Deliver:
 
-- `yatui-text`
-- `yatui-render`
+- `arborui-text`
+- `arborui-render`
 - Width policy
 - Grapheme store
 - Cell and buffer
@@ -257,8 +257,8 @@ validation remain part of stabilization.
 
 Deliver:
 
-- `yatui-terminal`
-- `yatui-backend-crossterm`
+- `arborui-terminal`
+- `arborui-backend-crossterm`
 - Backend trait
 - Normalized events
 - Desired terminal state
@@ -277,8 +277,8 @@ performs complete layout and painting; interaction is delivered in Milestone 5.
 
 Deliver:
 
-- `yatui-layout`
-- `yatui-ui`
+- `arborui-layout`
+- `arborui-ui`
 - Private Taffy adapter
 - Ephemeral elements
 - Retained identity
@@ -311,8 +311,8 @@ Status: implemented.
 
 Deliver:
 
-- `yatui-runtime`
-- `yatui-widgets`
+- `arborui-runtime`
+- `arborui-widgets`
 - `Application` and `Command`
 - Event proxy
 - Scheduler
@@ -324,20 +324,20 @@ external async work, and can be fully tested headlessly.
 
 ### Milestone 7: Facade And Public Test Harness
 
-Status: implemented. The facade exports a curated prelude, `yatui-test` drives
+Status: implemented. The facade exports a curated prelude, `arborui-test` drives
 the real runtime and renderer through an in-memory terminal, and the counter
 workspace example verifies the downstream dependency boundary.
 
 Deliver:
 
-- `yatui`
-- `yatui-test`
+- `arborui`
+- `arborui-test`
 - Prelude and feature structure
 - Application examples
 - Snapshot and event-injection APIs
 
-Exit criterion: a downstream application can depend only on `yatui` and test
-with `yatui-test` without importing backend implementation details.
+Exit criterion: a downstream application can depend only on `arborui` and test
+with `arborui-test` without importing backend implementation details.
 
 ### Milestone 8: Stabilization
 
@@ -345,8 +345,8 @@ Status: initial stabilization implemented. Terminal lifecycle failure recovery,
 cross-platform PTY CI, bounded fuzz targets, benchmark baselines, package
 contents, compatibility policy, and coordinated Cargo 1.90 release automation
 are in place. Unix job-control integration and emulator-specific behavior
-remain follow-ups. The first crates.io release is blocked until ownership of the
-unrelated existing `yatui` package is resolved or the package family is renamed.
+remain follow-ups. The complete `arborui` package family must be rechecked for
+crates.io availability immediately before the first release.
 
 Deliver:
 
@@ -366,7 +366,7 @@ order.
 
 Potential deliverables:
 
-- `yatui-macros`
+- `arborui-macros`
 - Declarative view macro
 - Derive helpers
 - Scoped tasks

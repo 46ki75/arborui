@@ -1,6 +1,6 @@
 [package]
-name = "yatui-example-counter"
-description = "Counter application demonstrating the public yatui API"
+name = "arborui-example-counter"
+description = "Counter application demonstrating the public arborui API"
 publish = false
 version.workspace = true
 edition.workspace = true
@@ -11,7 +11,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-yatui = { workspace = true }
+arborui = { workspace = true }
 
 [dev-dependencies]
-yatui-test = { workspace = true }
+arborui-test = { workspace = true }

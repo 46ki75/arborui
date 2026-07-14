@@ -1,9 +1,9 @@
 #![no_main]
 
 use libfuzzer_sys::fuzz_target;
-use yatui_core::{CursorState, Point, Size, Style};
-use yatui_render::Renderer;
-use yatui_text::WidthPolicy;
+use arborui_core::{CursorState, Point, Size, Style};
+use arborui_render::Renderer;
+use arborui_text::WidthPolicy;
 
 const TEXT: [&str; 8] = [
     "",

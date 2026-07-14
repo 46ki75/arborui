@@ -31,7 +31,7 @@ jobs:
 
       - name: Record Criterion baseline
         run: >-
-          cargo bench -p yatui --bench stabilization --all-features --
+          cargo bench -p arborui --bench stabilization --all-features --
           --save-baseline current --noplot
 
       - name: Upload benchmark report

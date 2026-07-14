@@ -1,7 +1,7 @@
 //! Downstream test using only the public application and test facades.
 
-use yatui_example_counter::Counter;
-use yatui_test::{Key, KeyCode, Size, TestApp};
+use arborui_example_counter::Counter;
+use arborui_test::{Key, KeyCode, Size, TestApp};
 
 #[test]
 fn counter_is_driven_through_public_facades() {

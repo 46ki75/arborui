@@ -1,0 +1,25 @@
+[package]
+name = "arborui-terminal"
+description = "Backend-neutral terminal events, state, and lifecycle contracts for arborui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+readme.workspace = true
+publish.workspace = true
+authors.workspace = true
+repository.workspace = true
+homepage.workspace = true
+categories.workspace = true
+keywords.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arborui-core = { workspace = true }
+arborui-render = { workspace = true }
+arborui-text = { workspace = true }

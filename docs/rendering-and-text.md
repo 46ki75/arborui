@@ -2,7 +2,7 @@
 
 ## Scope
 
-This document defines the contracts between `yatui-text`, `yatui-render`, and
+This document defines the contracts between `arborui-text`, `arborui-render`, and
 the terminal backend. The primary concern is correctness for Unicode text and
 terminal cells before performance optimizations are introduced.
 

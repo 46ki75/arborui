@@ -2,7 +2,7 @@
 
 ## Scope
 
-`yatui-terminal` defines backend-neutral terminal contracts and lifecycle
+`arborui-terminal` defines backend-neutral terminal contracts and lifecycle
 state. Concrete integrations such as Crossterm live in separate backend
 crates.
 
@@ -239,7 +239,7 @@ runtime.
 
 ## Crossterm Backend
 
-`yatui-backend-crossterm` is the first implementation because it provides a
+`arborui-backend-crossterm` is the first implementation because it provides a
 practical cross-platform baseline.
 
 The adapter owns:

@@ -2,7 +2,7 @@
 
 ## Status
 
-This document is a design proposal for the initial `yatui` architecture. It
+This document is a design proposal for the initial `arborui` architecture. It
 defines boundaries and invariants that should remain stable even when public
 API details change.
 
@@ -137,7 +137,7 @@ ui                -> core, text, layout, render
 widgets           -> core, text, layout, ui
 runtime           -> core, ui, render, terminal
 test              -> core, ui, render, terminal, runtime
-yatui facade      -> selected public crates
+arborui facade      -> selected public crates
 ```
 
 Dependencies always point toward lower-level data and behavior. A lower layer
@@ -236,8 +236,8 @@ screen mode may change even when visual cells do not.
 
 The initial stable extension points are:
 
-- Custom widgets through `yatui-ui`
-- Custom terminal backends through `yatui-terminal`
+- Custom widgets through `arborui-ui`
+- Custom terminal backends through `arborui-terminal`
 - Third-party widget crates without depending on the runtime
 - Application-specific command producers through an event proxy
 - Headless and remote transports through backend implementations

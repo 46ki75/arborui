@@ -2,17 +2,17 @@
 set -euo pipefail
 
 packages=(
-  yatui-core
-  yatui-text
-  yatui-layout
-  yatui-render
-  yatui-terminal
-  yatui-ui
-  yatui-backend-crossterm
-  yatui-runtime
-  yatui-widgets
-  yatui-test
-  yatui
+  arborui-core
+  arborui-text
+  arborui-layout
+  arborui-render
+  arborui-terminal
+  arborui-ui
+  arborui-backend-crossterm
+  arborui-runtime
+  arborui-widgets
+  arborui-test
+  arborui
 )
 
 for package in "${packages[@]}"; do

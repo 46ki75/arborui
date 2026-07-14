@@ -1,6 +1,6 @@
-# yatui
+# arborui
 
-`yatui` is an experimental Rust-native terminal user interface library. It is
+`arborui` is an experimental Rust-native terminal user interface library. It is
 being designed as a collection of focused crates for text processing,
 rendering, layout, terminal integration, retained UI identity, application
 runtime behavior, and widgets.
@@ -17,7 +17,7 @@ adds serialized model updates, opaque commands, external event proxies,
 runtime-neutral futures, idle-aware rendering, and transactional terminal
 orchestration. Standard controlled widgets include flex composition, blocks,
 buttons, stacks, lists, scrolling, and grapheme-aware text input. The public
-`yatui-test` harness drives complete applications with deterministic time,
+`arborui-test` harness drives complete applications with deterministic time,
 headless input, frame snapshots, and simulated output failures.
 
 ## Features
@@ -27,14 +27,14 @@ terminal backend. Disable default features when integrating another backend:
 
 ```toml
 [dependencies]
-yatui = { version = "0.1.0", default-features = false }
+arborui = { version = "0.1.0", default-features = false }
 ```
 
 Application code can import common model-update-view and widget APIs from the
 prelude:
 
 ```rust
-use yatui::prelude::*;
+use arborui::prelude::*;
 ```
 
 Downstream tests use the backend-independent harness as a separate development
@@ -42,11 +42,11 @@ dependency:
 
 ```toml
 [dev-dependencies]
-yatui-test = "0.1.0"
+arborui-test = "0.1.0"
 ```
 
 ```rust
-use yatui_test::{KeyCode, Size, TestApp};
+use arborui_test::{KeyCode, Size, TestApp};
 
 let mut app = TestApp::new(MyApp::default(), Size::new(80, 24));
 app.key(KeyCode::Enter);
@@ -59,16 +59,16 @@ test.
 ## Design
 
 Start with the
-[design document index](https://github.com/46ki75/yatui/blob/main/docs/README.md).
+[design document index](https://github.com/46ki75/arborui/blob/main/docs/README.md).
 The design covers:
 
-- [Architecture and ownership](https://github.com/46ki75/yatui/blob/main/docs/architecture.md)
-- [Workspace crate boundaries](https://github.com/46ki75/yatui/blob/main/docs/crates.md)
-- [Rendering and Unicode text](https://github.com/46ki75/yatui/blob/main/docs/rendering-and-text.md)
-- [UI and runtime behavior](https://github.com/46ki75/yatui/blob/main/docs/ui-and-runtime.md)
-- [Terminal lifecycle](https://github.com/46ki75/yatui/blob/main/docs/terminal.md)
-- [Compatibility](https://github.com/46ki75/yatui/blob/main/docs/compatibility.md)
-- [Testing and implementation roadmap](https://github.com/46ki75/yatui/blob/main/docs/testing-and-roadmap.md)
+- [Architecture and ownership](https://github.com/46ki75/arborui/blob/main/docs/architecture.md)
+- [Workspace crate boundaries](https://github.com/46ki75/arborui/blob/main/docs/crates.md)
+- [Rendering and Unicode text](https://github.com/46ki75/arborui/blob/main/docs/rendering-and-text.md)
+- [UI and runtime behavior](https://github.com/46ki75/arborui/blob/main/docs/ui-and-runtime.md)
+- [Terminal lifecycle](https://github.com/46ki75/arborui/blob/main/docs/terminal.md)
+- [Compatibility](https://github.com/46ki75/arborui/blob/main/docs/compatibility.md)
+- [Testing and implementation roadmap](https://github.com/46ki75/arborui/blob/main/docs/testing-and-roadmap.md)
 
 ## Development
 
@@ -84,6 +84,6 @@ The workspace MSRV is Rust 1.85.0 and is pinned in `rust-toolchain.toml`.
 ## License
 
 Licensed under either the
-[Apache License, Version 2.0](https://github.com/46ki75/yatui/blob/main/LICENSE-APACHE)
-or the [MIT license](https://github.com/46ki75/yatui/blob/main/LICENSE-MIT), at
+[Apache License, Version 2.0](https://github.com/46ki75/arborui/blob/main/LICENSE-APACHE)
+or the [MIT license](https://github.com/46ki75/arborui/blob/main/LICENSE-MIT), at
 your option.

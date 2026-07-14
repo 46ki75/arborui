@@ -358,7 +358,7 @@ contracts rather than terminal-backend types.
 
 ## Public Headless Harness
 
-`yatui-test` owns an in-memory terminal and drives the same `AppRunner`, retained
+`arborui-test` owns an in-memory terminal and drives the same `AppRunner`, retained
 tree, renderer, and transactional write path as a real application. `TestApp`
 supports key, mouse, paste, resize, direct UI event, and external-proxy input;
 manual time advancement; and settling until no immediate visual work remains.

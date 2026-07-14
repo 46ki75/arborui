@@ -3,12 +3,12 @@
 Releases are manual, coordinated, and checklist-gated. All publishable crates
 use the same version and one `vX.Y.Z` tag.
 
-## First-Release Blocker
+## First-Release Name Gate
 
-The crates.io name `yatui` is currently owned by an unrelated project. Do not
-publish any crate in this workspace until facade-name ownership is transferred
-or the package family is renamed. The release script requires
-`YATUI_CRATES_IO_NAME_CONFIRMED=1` for a real upload so this decision cannot be
+The eleven `arborui` package names had no exact crates.io matches when the
+project was renamed. Recheck the complete package family immediately before the
+first release because availability can change. The release script requires
+`ARBORUI_CRATES_IO_NAME_CONFIRMED=1` for a real upload so this check cannot be
 bypassed accidentally.
 
 ## Checklist

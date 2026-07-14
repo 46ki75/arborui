@@ -2,7 +2,7 @@
 
 ## Stability
 
-`yatui` is pre-1.0 and its public API is experimental. All workspace crates use
+`arborui` is pre-1.0 and its public API is experimental. All workspace crates use
 one coordinated version.
 
 - Patch releases within one `0.y` line contain compatible additions and fixes.

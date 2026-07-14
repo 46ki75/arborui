@@ -1,6 +1,6 @@
-# yatui Design Documents
+# arborui Design Documents
 
-This directory describes the planned architecture for `yatui`, a Rust-native
+This directory describes the planned architecture for `arborui`, a Rust-native
 terminal user interface library. The design is intentionally split across
 small crates with explicit dependency direction.
 

@@ -2,8 +2,8 @@
 
 use std::{error::Error, io, time::Duration};
 
-use yatui::{CrosstermBackend, TerminalState, run};
-use yatui_example_counter::Counter;
+use arborui::{CrosstermBackend, TerminalState, run};
+use arborui_example_counter::Counter;
 
 fn main() -> Result<(), Box<dyn Error>> {
     let backend = CrosstermBackend::new(io::stdout())?;

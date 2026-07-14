@@ -17,7 +17,7 @@ test:
     cargo test --workspace --all-features
 
 test-pty:
-    cargo test -p yatui-backend-crossterm --test pty_lifecycle -- --ignored --test-threads=1
+    cargo test -p arborui-backend-crossterm --test pty_lifecycle -- --ignored --test-threads=1
 
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
@@ -37,10 +37,10 @@ coverage-ci: test-cov
     cargo llvm-cov report --lcov --output-path lcov.info
 
 bench-smoke:
-    cargo test -p yatui --bench stabilization --all-features
+    cargo test -p arborui --bench stabilization --all-features
 
 bench:
-    cargo bench -p yatui --bench stabilization --all-features -- --noplot
+    cargo bench -p arborui --bench stabilization --all-features -- --noplot
 
 package-check:
     bash scripts/check-package-contents.sh

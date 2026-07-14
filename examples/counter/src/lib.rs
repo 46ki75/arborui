@@ -1,6 +1,6 @@
-//! Minimal counter application using only the `yatui` facade.
+//! Minimal counter application using only the `arborui` facade.
 
-use yatui::prelude::*;
+use arborui::prelude::*;
 
 /// Messages accepted by [`Counter`].
 pub enum Message {
