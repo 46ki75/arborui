@@ -106,6 +106,17 @@ impl<'a> Canvas<'a> {
         self
     }
 
+    /// Creates a shorter-lived canvas with an additional clip and local origin.
+    pub fn scoped(&mut self, clip: Rect, origin: Point) -> Canvas<'_> {
+        Canvas {
+            buffer: &mut *self.buffer,
+            store: &mut *self.store,
+            clip: self.clip.intersection(clip).unwrap_or(Rect::ZERO),
+            origin,
+            width_policy: self.width_policy,
+        }
+    }
+
     /// Draws exactly one grapheme, returning whether it was fully visible.
     pub fn draw_grapheme(
         &mut self,

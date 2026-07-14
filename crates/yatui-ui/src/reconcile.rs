@@ -1,0 +1,35 @@
+use std::fmt;
+
+use crate::{Invalidation, Key};
+
+/// Reconciliation failures that leave the retained tree unchanged.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReconcileError {
+    /// Two children of one element used the same explicit key.
+    DuplicateSiblingKey(Key),
+}
+
+impl fmt::Display for ReconcileError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateSiblingKey(key) => {
+                write!(formatter, "duplicate explicit sibling key {key:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ReconcileError {}
+
+/// Summary of one retained-tree reconciliation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct ReconcileReport {
+    /// Compatible retained nodes reused by the new view.
+    pub reused: usize,
+    /// New retained nodes allocated.
+    pub created: usize,
+    /// Obsolete retained nodes removed.
+    pub removed: usize,
+    /// Most expensive work requested by the resulting tree.
+    pub invalidation: Invalidation,
+}

@@ -253,6 +253,9 @@ exit, application error, panic, resize, and suspension.
 
 ### Milestone 4: Layout And UI Tree
 
+Status: initial implementation complete. The current correctness baseline
+performs complete layout and painting; interaction is delivered in Milestone 5.
+
 Deliver:
 
 - `yatui-layout`

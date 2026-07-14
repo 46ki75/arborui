@@ -8,8 +8,10 @@ runtime behavior, and widgets.
 The project is in its initial implementation phase. The current code provides
 shared core types, Unicode grapheme measurement, cell buffers, clipped drawing,
 surface composition, transactional frame diffing, normalized terminal events,
-RAII terminal sessions, and a Crossterm backend. The remaining subsystems are
-developed incrementally.
+RAII terminal sessions, a Crossterm backend, private-Taffy flex layout,
+borrowed declarative elements, retained identity, keyed reconciliation, and a
+headless UI-to-frame pipeline. The remaining subsystems are developed
+incrementally.
 
 ## Features
 

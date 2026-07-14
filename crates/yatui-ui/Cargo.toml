@@ -1,6 +1,6 @@
 [package]
-name = "yatui"
-description = "A Rust-native terminal user interface library"
+name = "yatui-ui"
+description = "Ephemeral elements and retained UI identity for yatui"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -14,15 +14,8 @@ keywords.workspace = true
 [lints]
 workspace = true
 
-[features]
-default = ["crossterm"]
-crossterm = ["dep:yatui-backend-crossterm"]
-
 [dependencies]
-yatui-backend-crossterm = { workspace = true, optional = true }
 yatui-core = { workspace = true }
 yatui-layout = { workspace = true }
 yatui-render = { workspace = true }
-yatui-terminal = { workspace = true }
 yatui-text = { workspace = true }
-yatui-ui = { workspace = true }
