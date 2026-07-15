@@ -295,16 +295,33 @@ impl<A: Application> TestApp<A> {
 
     /// Presses and releases the primary pointer button at `point`.
     pub fn click(&mut self, point: Point) -> SettleReport {
-        self.mouse(MouseEvent {
+        let mut report = self.mouse(MouseEvent {
             kind: MouseEventKind::Down(MouseButton::Left),
             position: point,
             modifiers: KeyModifiers::NONE,
         });
-        self.mouse(MouseEvent {
+        if report.outcome == SettleOutcome::Quitting {
+            return report;
+        }
+
+        let up = self.mouse(MouseEvent {
             kind: MouseEventKind::Up(MouseButton::Left),
             position: point,
             modifiers: KeyModifiers::NONE,
-        })
+        });
+        report.turns = report.turns.saturating_add(up.turns);
+        report.updates = report.updates.saturating_add(up.updates);
+        report.completed_tasks = report.completed_tasks.saturating_add(up.completed_tasks);
+        report.committed_frames = report.committed_frames.saturating_add(up.committed_frames);
+        report.outcome = match (report.outcome, up.outcome) {
+            (SettleOutcome::Quitting, _) | (_, SettleOutcome::Quitting) => SettleOutcome::Quitting,
+            (SettleOutcome::StateUnknown, _) | (_, SettleOutcome::StateUnknown) => {
+                SettleOutcome::StateUnknown
+            }
+            (SettleOutcome::Deferred, _) | (_, SettleOutcome::Deferred) => SettleOutcome::Deferred,
+            (SettleOutcome::Settled, SettleOutcome::Settled) => SettleOutcome::Settled,
+        };
+        report
     }
 
     /// Injects a complete bracketed-paste payload.
@@ -455,5 +472,119 @@ fn fail_test<T>(result: Result<T, TestError>) -> T {
     match result {
         Ok(value) => value,
         Err(error) => panic!("arborui test application failed: {error}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use arborui_runtime::{Command, UpdateContext};
+    use arborui_ui::{Element, EventPhase, Invalidation, PointerButton, PointerEventKind, UiEvent};
+
+    use super::*;
+
+    struct PointerDownApp {
+        presses: usize,
+        label: String,
+        quit_on_press: bool,
+    }
+
+    impl Default for PointerDownApp {
+        fn default() -> Self {
+            Self {
+                presses: 0,
+                label: "0".to_owned(),
+                quit_on_press: false,
+            }
+        }
+    }
+
+    enum Message {
+        Press,
+    }
+
+    impl Application for PointerDownApp {
+        type Message = Message;
+
+        fn update(
+            &mut self,
+            message: Self::Message,
+            context: &mut UpdateContext<Self::Message>,
+        ) -> Command<Self::Message> {
+            match message {
+                Message::Press => {
+                    self.presses += 1;
+                    self.label = self.presses.to_string();
+                    context.invalidate(Invalidation::Paint);
+                    if self.quit_on_press {
+                        Command::quit()
+                    } else {
+                        Command::none()
+                    }
+                }
+            }
+        }
+
+        fn view(&self) -> Element<'_, Self::Message> {
+            Element::custom("button", [Element::text(&self.label)])
+                .focusable(true)
+                .on_event(EventPhase::Target, |event, context| match event {
+                    UiEvent::Pointer(pointer)
+                        if pointer.kind == PointerEventKind::Down(PointerButton::Primary) =>
+                    {
+                        context.capture_pointer();
+                        context.emit(Message::Press);
+                        context.mark_handled();
+                    }
+                    UiEvent::Pointer(pointer)
+                        if pointer.kind == PointerEventKind::Up(PointerButton::Primary) =>
+                    {
+                        context.release_pointer();
+                        context.mark_handled();
+                    }
+                    _ => {}
+                })
+        }
+    }
+
+    #[test]
+    fn click_reports_work_from_pointer_down_and_up() {
+        let mut app = TestApp::new(PointerDownApp::default(), Size::new(1, 1));
+
+        let report = app.click(Point::ORIGIN);
+
+        assert_eq!(app.application().presses, 1);
+        assert_eq!(app.frame().characters(), "1");
+        assert_eq!(report.updates, 1);
+        assert_eq!(report.committed_frames, 1);
+    }
+
+    #[test]
+    fn click_preserves_deferred_pointer_down_outcome() {
+        let mut app = TestApp::new(PointerDownApp::default(), Size::new(1, 1));
+        app.defer_next_output();
+
+        let report = app.click(Point::ORIGIN);
+
+        assert_eq!(report.outcome, SettleOutcome::Deferred);
+        assert_eq!(report.updates, 1);
+        assert_eq!(report.committed_frames, 1);
+        assert_eq!(app.frame().characters(), "1");
+    }
+
+    #[test]
+    fn click_does_not_release_pointer_after_pointer_down_quits() {
+        let mut app = TestApp::new(
+            PointerDownApp {
+                quit_on_press: true,
+                ..PointerDownApp::default()
+            },
+            Size::new(1, 1),
+        );
+
+        let report = app.click(Point::ORIGIN);
+
+        assert_eq!(report.outcome, SettleOutcome::Quitting);
+        assert_eq!(report.updates, 1);
+        assert!(app.ui_tree().captured_pointer().is_some());
     }
 }

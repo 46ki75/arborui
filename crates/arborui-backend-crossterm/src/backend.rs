@@ -264,11 +264,22 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
         })();
 
         let raw_result = if self.active.raw_mode && !self.original_raw_mode {
-            disable_raw_mode()
+            let result = disable_raw_mode();
+            if result.is_ok() {
+                self.active.raw_mode = false;
+                self.confirmed.raw_mode = false;
+            }
+            result
         } else {
             Ok(())
         };
 
+        if output_result.is_err() {
+            self.confirmed = TerminalState {
+                raw_mode: self.active.raw_mode,
+                ..TerminalState::default()
+            };
+        }
         let result = output_result.and(raw_result);
         if result.is_ok() {
             self.active = TerminalState {
@@ -504,7 +515,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known terminal restore recovery bug"]
     fn failed_restore_flush_requires_screen_mode_reapplication() -> io::Result<()> {
         let writer = BufferedFailFlushOnce {
             fail_on_flush: 2,

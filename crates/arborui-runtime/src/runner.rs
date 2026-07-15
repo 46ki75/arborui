@@ -481,7 +481,7 @@ impl<A: Application> AppRunner<A> {
             }
             match self.render_terminal(session)? {
                 TerminalRenderOutcome::Deferred | TerminalRenderOutcome::StateUnknown => {
-                    if session.is_suspended() {
+                    if !session.is_active() {
                         self.wake.wait(self.scheduler.wait_timeout(poll_interval));
                         continue;
                     }
@@ -1144,7 +1144,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known failed-resume busy-loop bug"]
     fn failed_resume_and_cleanup_does_not_busy_loop_run_terminal()
     -> Result<(), Box<dyn std::error::Error>> {
         let sizes = Arc::new(AtomicUsize::new(0));

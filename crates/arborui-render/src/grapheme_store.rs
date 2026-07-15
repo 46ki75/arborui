@@ -1,4 +1,11 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::{HashMap, HashSet},
+    fmt,
+    sync::{
+        Arc,
+        atomic::{AtomicU32, Ordering},
+    },
+};
 
 use arborui_text::{WidthPolicy, graphemes};
 
@@ -44,14 +51,25 @@ impl fmt::Display for GraphemeStoreError {
 
 impl std::error::Error for GraphemeStoreError {}
 
-/// An append-only store of deduplicated grapheme strings.
+/// A store of deduplicated grapheme strings.
 ///
-/// Entries remain valid for the life of the store, so IDs cannot alias stale
-/// content while current and prepared frames coexist.
-#[derive(Clone, Debug, Default)]
+/// Clones retain their entries and share identity allocation, so independently
+/// added entries cannot alias while cloned stores coexist.
+#[derive(Clone, Debug)]
 pub struct GraphemeStore {
-    entries: Vec<Arc<str>>,
+    entries: HashMap<GraphemeId, Arc<str>>,
     ids: HashMap<Arc<str>, GraphemeId>,
+    next_id: Arc<AtomicU32>,
+}
+
+impl Default for GraphemeStore {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            ids: HashMap::new(),
+            next_id: Arc::new(AtomicU32::new(0)),
+        }
+    }
 }
 
 impl GraphemeStore {
@@ -84,11 +102,15 @@ impl GraphemeStore {
             return Ok(*id);
         }
 
-        let index =
-            u32::try_from(self.entries.len()).map_err(|_| GraphemeStoreError::CapacityExceeded)?;
-        let id = GraphemeId(index);
+        let id = self
+            .next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                (next < u32::MAX).then(|| next + 1)
+            })
+            .map(GraphemeId)
+            .map_err(|_| GraphemeStoreError::CapacityExceeded)?;
         let value: Arc<str> = Arc::from(value);
-        self.entries.push(Arc::clone(&value));
+        self.entries.insert(id, Arc::clone(&value));
         self.ids.insert(value, id);
         Ok(id)
     }
@@ -96,8 +118,14 @@ impl GraphemeStore {
     /// Resolves an identity to its shared grapheme text.
     pub fn get(&self, id: GraphemeId) -> Result<&Arc<str>, GraphemeStoreError> {
         self.entries
-            .get(id.0 as usize)
+            .get(&id)
             .ok_or(GraphemeStoreError::UnknownId(id))
+    }
+
+    pub(crate) fn retain(&mut self, ids: impl IntoIterator<Item = GraphemeId>) {
+        let retained = ids.into_iter().collect::<HashSet<_>>();
+        self.entries.retain(|id, _| retained.contains(id));
+        self.ids.retain(|_, id| retained.contains(id));
     }
 }
 
@@ -123,5 +151,27 @@ mod tests {
 
         assert_eq!(store.intern(""), Err(GraphemeStoreError::InvalidGrapheme));
         assert_eq!(store.intern("ab"), Err(GraphemeStoreError::InvalidGrapheme));
+    }
+
+    #[test]
+    fn cloned_stores_do_not_alias_independently_interned_ids() -> Result<(), GraphemeStoreError> {
+        let mut first = GraphemeStore::new();
+        let mut second = first.clone();
+
+        let first_id = first.intern("a")?;
+        let second_id = second.intern("b")?;
+
+        assert_ne!(first_id, second_id);
+        assert_eq!(first.get(first_id)?.as_ref(), "a");
+        assert_eq!(second.get(second_id)?.as_ref(), "b");
+        assert_eq!(
+            first.get(second_id),
+            Err(GraphemeStoreError::UnknownId(second_id))
+        );
+        assert_eq!(
+            second.get(first_id),
+            Err(GraphemeStoreError::UnknownId(first_id))
+        );
+        Ok(())
     }
 }

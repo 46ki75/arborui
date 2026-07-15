@@ -54,6 +54,7 @@ impl<B: TerminalBackend> TerminalSession<B> {
     /// Applies and records new desired terminal state.
     pub fn apply_state(&mut self, desired: TerminalState) -> Result<(), B::Error> {
         if !self.suspended {
+            self.full_repaint_required = true;
             self.backend.apply_state(&desired)?;
         }
         self.desired = desired;
@@ -84,11 +85,13 @@ impl<B: TerminalBackend> TerminalSession<B> {
     pub fn suspend(&mut self) -> Result<(), B::Error> {
         if self.suspended {
             if self.cleanup_required {
+                self.full_repaint_required = true;
                 self.backend.restore()?;
                 self.cleanup_required = false;
             }
             return Ok(());
         }
+        self.full_repaint_required = true;
         self.backend.restore()?;
         self.suspended = true;
         self.cleanup_required = false;
@@ -122,6 +125,7 @@ impl<B: TerminalBackend> TerminalSession<B> {
         if self.suspended && !self.cleanup_required {
             return Ok(());
         }
+        self.full_repaint_required = true;
         self.backend.restore()?;
         self.suspended = true;
         self.cleanup_required = false;
@@ -133,6 +137,12 @@ impl<B: TerminalBackend> TerminalSession<B> {
     #[must_use]
     pub const fn is_suspended(&self) -> bool {
         self.suspended && !self.cleanup_required
+    }
+
+    /// Returns whether terminal I/O is currently available.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        !self.suspended
     }
 
     /// Returns a shared reference to the backend.
@@ -157,7 +167,14 @@ impl<B: TerminalBackend> Drop for TerminalSession<B> {
 
 #[cfg(test)]
 mod tests {
-    use std::{convert::Infallible, io, sync::Arc};
+    use std::{
+        convert::Infallible,
+        io,
+        sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        },
+    };
 
     use super::*;
     use crate::Capabilities;
@@ -249,6 +266,7 @@ mod tests {
         applied: Arc<std::sync::atomic::AtomicUsize>,
         restored: Arc<std::sync::atomic::AtomicUsize>,
         writes: Arc<std::sync::atomic::AtomicUsize>,
+        changed_screen_before_apply_failure: Arc<AtomicBool>,
         fail_apply_on: usize,
         fail_restore_on: usize,
         fail_write_on: usize,
@@ -282,6 +300,9 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
                 + 1;
             if call == self.plan.fail_apply_on {
+                self.plan
+                    .changed_screen_before_apply_failure
+                    .store(true, Ordering::Relaxed);
                 return Err(io::Error::other("injected apply failure"));
             }
             Ok(())
@@ -320,6 +341,77 @@ mod tests {
             capabilities: Capabilities::default(),
             plan,
         }
+    }
+
+    #[test]
+    fn successful_active_apply_state_requires_full_repaint() -> io::Result<()> {
+        let mut session = TerminalSession::open(
+            failing_backend(FailurePlan::default()),
+            TerminalState::fullscreen(),
+        )?;
+        assert!(session.take_full_repaint_required());
+
+        session.apply_state(TerminalState::default())?;
+
+        assert!(
+            session.take_full_repaint_required(),
+            "changing active terminal state can change the physical screen, so the next frame \
+             must be a full repaint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn partially_failed_active_apply_state_requires_full_repaint() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_apply_on: 2,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan.clone()), TerminalState::fullscreen())?;
+        assert!(session.take_full_repaint_required());
+
+        assert!(session.apply_state(TerminalState::default()).is_err());
+        assert!(
+            plan.changed_screen_before_apply_failure
+                .load(Ordering::Relaxed)
+        );
+        assert!(
+            session.take_full_repaint_required(),
+            "an apply-state error after a partial physical transition leaves screen state \
+             unknown, so the next frame must be a full repaint"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_suspend_requires_full_repaint() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_restore_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan), TerminalState::fullscreen())?;
+        assert!(session.take_full_repaint_required());
+
+        assert!(session.suspend().is_err());
+        assert!(session.take_full_repaint_required());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_explicit_restore_requires_full_repaint() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_restore_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan), TerminalState::fullscreen())?;
+        assert!(session.take_full_repaint_required());
+
+        assert!(session.restore().is_err());
+        assert!(session.take_full_repaint_required());
+        Ok(())
     }
 
     #[test]

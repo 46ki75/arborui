@@ -112,22 +112,18 @@ fn compose_surface(
             let target_point = surface.position.translated(x, y);
             match cell.content {
                 CellContent::Empty if surface.opacity == Opacity::Opaque => {
-                    if target.bounds().contains(target_point) {
-                        clear_target_hit_span(target, target_hits, target_point);
-                        target.set_empty(target_point, cell.style)?;
-                        copy_hit_option(surface, source_point, target_hits, target_point);
-                    }
+                    compose_fallback_cell(
+                        target,
+                        target_hits,
+                        surface,
+                        source_point,
+                        target_point,
+                        cell.style,
+                    )?;
                 }
-                CellContent::Empty | CellContent::Continuation { .. } => {}
+                CellContent::Empty => {}
                 CellContent::Grapheme { id, width } => {
-                    let source_end = source_point.x.saturating_add(i32::from(width) - 1);
-                    let target_end = target_point.x.saturating_add(i32::from(width) - 1);
-                    if clip.contains(Point::new(source_end, source_point.y))
-                        && target.bounds().contains(target_point)
-                        && target
-                            .bounds()
-                            .contains(Point::new(target_end, target_point.y))
-                    {
+                    if span_fits(surface, clip, target, source_point, width) {
                         for offset in 0..width {
                             clear_target_hit_span(
                                 target,
@@ -144,10 +140,71 @@ fn compose_surface(
                                 target_point.translated(i32::from(offset), 0),
                             );
                         }
+                    } else if surface.opacity == Opacity::Opaque {
+                        compose_fallback_cell(
+                            target,
+                            target_hits,
+                            surface,
+                            source_point,
+                            target_point,
+                            cell.style,
+                        )?;
+                    }
+                }
+                CellContent::Continuation { offset, .. } => {
+                    let start = source_point.translated(-i32::from(offset), 0);
+                    let complete_span_fits =
+                        match surface.buffer.get(start).map(|cell| cell.content) {
+                            Some(CellContent::Grapheme { width, .. }) => {
+                                span_fits(surface, clip, target, start, width)
+                            }
+                            _ => false,
+                        };
+                    if !complete_span_fits && surface.opacity == Opacity::Opaque {
+                        compose_fallback_cell(
+                            target,
+                            target_hits,
+                            surface,
+                            source_point,
+                            target_point,
+                            cell.style,
+                        )?;
                     }
                 }
             }
         }
+    }
+    Ok(())
+}
+
+fn span_fits(
+    surface: &Surface,
+    clip: Rect,
+    target: &Buffer,
+    source_start: Point,
+    width: u16,
+) -> bool {
+    let source_end = source_start.translated(i32::from(width) - 1, 0);
+    let target_start = surface.position.translated(source_start.x, source_start.y);
+    let target_end = target_start.translated(i32::from(width) - 1, 0);
+    clip.contains(source_start)
+        && clip.contains(source_end)
+        && target.bounds().contains(target_start)
+        && target.bounds().contains(target_end)
+}
+
+fn compose_fallback_cell(
+    target: &mut Buffer,
+    target_hits: &mut HitMap,
+    surface: &Surface,
+    source_point: Point,
+    target_point: Point,
+    style: arborui_core::Style,
+) -> Result<(), BufferError> {
+    if target.bounds().contains(target_point) {
+        clear_target_hit_span(target, target_hits, target_point);
+        target.set_empty(target_point, style)?;
+        copy_hit_option(surface, source_point, target_hits, target_point);
     }
     Ok(())
 }
@@ -265,7 +322,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known opaque wide-grapheme clipping bug"]
     fn opaque_surface_blocks_lower_cell_and_hit_when_clip_cuts_wide_grapheme()
     -> Result<(), BufferError> {
         let mut lower_buffer = Buffer::new(Size::new(2, 1));

@@ -107,15 +107,29 @@ impl FramePatch {
 }
 
 /// A fully painted frame waiting for an output decision.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub struct PreparedFrame {
     next: Buffer,
     hit_map: HitMap,
     cursor: CursorState,
     patch: FramePatch,
+    graphemes: GraphemeStore,
     renderer_id: u64,
     generation: u64,
 }
+
+impl PartialEq for PreparedFrame {
+    fn eq(&self, other: &Self) -> bool {
+        self.next == other.next
+            && self.hit_map == other.hit_map
+            && self.cursor == other.cursor
+            && self.patch == other.patch
+            && self.renderer_id == other.renderer_id
+            && self.generation == other.generation
+    }
+}
+
+impl Eq for PreparedFrame {}
 
 /// Opaque identity for one committed renderer state.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -289,12 +303,9 @@ impl Renderer {
     {
         let mut next = Buffer::new(size);
         let mut hit_map = HitMap::new(size);
-        let mut canvas = Canvas::with_hit_map(
-            &mut next,
-            &mut self.graphemes,
-            &mut hit_map,
-            self.width_policy,
-        );
+        let mut graphemes = self.graphemes.clone();
+        let mut canvas =
+            Canvas::with_hit_map(&mut next, &mut graphemes, &mut hit_map, self.width_policy);
         paint(&mut canvas)?;
 
         let full_repaint = self.force_full_repaint || self.current.size() != size;
@@ -304,13 +315,14 @@ impl Renderer {
             self.cursor,
             cursor,
             full_repaint,
-            &self.graphemes,
+            &graphemes,
         )?;
         Ok(PreparedFrame {
             next,
             hit_map,
             cursor,
             patch,
+            graphemes,
             renderer_id: self.id,
             generation: self.generation,
         })
@@ -324,9 +336,23 @@ impl Renderer {
         if prepared.generation != self.generation {
             return Err(CommitError::StaleFrame);
         }
+        let mut graphemes = prepared.graphemes;
+        graphemes.retain(
+            prepared
+                .next
+                .cells()
+                .iter()
+                .filter_map(|cell| match cell.content {
+                    CellContent::Grapheme { id, .. } | CellContent::Continuation { id, .. } => {
+                        Some(id)
+                    }
+                    CellContent::Empty => None,
+                }),
+        );
         self.current = prepared.next;
         self.hit_map = prepared.hit_map;
         self.cursor = prepared.cursor;
+        self.graphemes = graphemes;
         self.force_full_repaint = false;
         self.generation = self.generation.wrapping_add(1);
         Ok(())
@@ -478,6 +504,94 @@ mod tests {
             Ok(())
         })?;
         assert!(!retry.patch().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn discarded_frames_do_not_retain_graphemes() -> Result<(), RenderError> {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let retained_before = renderer.graphemes.len();
+
+        for grapheme in ["a", "b", "c", "d"] {
+            let prepared = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
+                canvas.draw_text(Point::ORIGIN, grapheme, Style::default(), None)?;
+                Ok(())
+            })?;
+            renderer.discard(prepared);
+        }
+
+        assert_eq!(
+            renderer.graphemes.len(),
+            retained_before,
+            "discarded frames must not retain their graphemes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_frames_do_not_retain_graphemes() {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let retained_before = renderer.graphemes.len();
+
+        let result = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
+            canvas.draw_text(Point::ORIGIN, "x", Style::default(), None)?;
+            Err(DrawError::InvalidGrapheme)
+        });
+
+        assert_eq!(result, Err(RenderError::Draw(DrawError::InvalidGrapheme)));
+        assert_eq!(renderer.graphemes.len(), retained_before);
+    }
+
+    #[test]
+    fn committed_frames_release_replaced_graphemes() -> Result<(), RenderError> {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+
+        for grapheme in ["a", "b", "c", "d"] {
+            let prepared = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
+                canvas.draw_text(Point::ORIGIN, grapheme, Style::default(), None)?;
+                Ok(())
+            })?;
+            assert_eq!(renderer.commit(prepared), Ok(()));
+            assert_eq!(renderer.graphemes.len(), 1);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn concurrent_prepared_frames_keep_distinct_grapheme_ids() -> Result<(), RenderError> {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let first = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
+            canvas.draw_text(Point::ORIGIN, "a", Style::default(), None)?;
+            Ok(())
+        })?;
+        let second = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
+            canvas.draw_text(Point::ORIGIN, "b", Style::default(), None)?;
+            Ok(())
+        })?;
+
+        let first_content = &first.patch().runs[0].cells[0].content;
+        let second_content = &second.patch().runs[0].cells[0].content;
+        let (
+            PatchCellContent::Grapheme {
+                id: first_id,
+                text: first_text,
+                ..
+            },
+            PatchCellContent::Grapheme {
+                id: second_id,
+                text: second_text,
+                ..
+            },
+        ) = (first_content, second_content)
+        else {
+            panic!("prepared patches must contain graphemes");
+        };
+        assert_ne!(first_id, second_id);
+        assert_eq!(first_text.as_ref(), "a");
+        assert_eq!(second_text.as_ref(), "b");
+
+        assert_eq!(renderer.commit(first), Ok(()));
+        assert_eq!(renderer.commit(second), Err(CommitError::StaleFrame));
         Ok(())
     }
 

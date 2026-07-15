@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt};
+use std::{collections::HashMap, fmt, sync::Arc};
 
 use arborui_core::{CursorState, CursorVisibility, Point, Rect, Size, Style};
 use arborui_layout::{LayoutError, LayoutNodeId, LayoutTree};
@@ -30,6 +30,8 @@ pub enum UiError {
 /// Failure to commit a prepared UI and renderer transaction.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UiCommitError {
+    /// The frame was prepared by another logical UI tree.
+    ForeignTree,
     /// Retained interaction state changed after frame preparation.
     StaleTree,
     /// Renderer state changed or the frame belongs to another renderer.
@@ -39,6 +41,7 @@ pub enum UiCommitError {
 impl fmt::Display for UiCommitError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::ForeignTree => formatter.write_str("prepared frame belongs to another UI tree"),
             Self::StaleTree => formatter.write_str("UI state advanced after frame preparation"),
             Self::Renderer(error) => error.fmt(formatter),
         }
@@ -48,7 +51,7 @@ impl fmt::Display for UiCommitError {
 impl std::error::Error for UiCommitError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::StaleTree => None,
+            Self::ForeignTree | Self::StaleTree => None,
             Self::Renderer(error) => Some(error),
         }
     }
@@ -93,8 +96,12 @@ impl From<RenderError> for UiError {
 }
 
 /// Retained identity and geometry for a headless UI.
-#[derive(Clone, Debug, Default)]
+///
+/// A clone is an independent logical tree and cannot commit frames prepared by
+/// its source tree.
+#[derive(Debug, Default)]
 pub struct UiTree {
+    owner: UiTreeOwner,
     nodes: HashMap<NodeId, RetainedNode>,
     root: Option<NodeId>,
     next_id: u64,
@@ -114,9 +121,25 @@ pub struct UiTree {
 /// Commit or discard this value through [`UiTree`] so logical interaction
 /// state and the renderer's committed frame advance together.
 pub struct PreparedUiFrame {
+    owner: UiTreeOwner,
     frame: PreparedFrame,
     tree: UiTree,
     base_revision: u64,
+}
+
+#[derive(Clone, Debug)]
+struct UiTreeOwner(Arc<()>);
+
+impl Default for UiTreeOwner {
+    fn default() -> Self {
+        Self(Arc::new(()))
+    }
+}
+
+impl UiTreeOwner {
+    fn is_same(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -144,6 +167,14 @@ impl PreparedUiFrame {
     #[must_use]
     pub const fn hit_map(&self) -> &HitMap {
         self.frame.hit_map()
+    }
+}
+
+impl Clone for UiTree {
+    fn clone(&self) -> Self {
+        let mut cloned = self.clone_for_staging();
+        cloned.owner = UiTreeOwner::default();
+        cloned
     }
 }
 
@@ -271,6 +302,9 @@ impl UiTree {
         prepared: PreparedUiFrame,
         renderer: &mut Renderer,
     ) -> Result<(), UiCommitError> {
+        if !self.owner.is_same(&prepared.owner) {
+            return Err(UiCommitError::ForeignTree);
+        }
         if self.revision != prepared.base_revision {
             return Err(UiCommitError::StaleTree);
         }
@@ -497,13 +531,32 @@ impl UiTree {
         viewport: Size,
         renderer: &mut Renderer,
     ) -> Result<PreparedUiFrame, UiError> {
-        let mut staged = self.clone();
+        let mut staged = self.clone_for_staging();
         let frame = staged.prepare_frame(element, viewport, renderer)?;
         Ok(PreparedUiFrame {
+            owner: self.owner.clone(),
             frame,
             tree: staged,
             base_revision: self.revision,
         })
+    }
+
+    fn clone_for_staging(&self) -> Self {
+        Self {
+            owner: self.owner.clone(),
+            nodes: self.nodes.clone(),
+            root: self.root,
+            next_id: self.next_id,
+            pending: self.pending,
+            viewport: self.viewport,
+            focus: self.focus.clone(),
+            captured_pointer: self.captured_pointer,
+            hovered: self.hovered,
+            last_pointer: self.last_pointer,
+            pending_focus_change: self.pending_focus_change,
+            revision: self.revision,
+            renderer_state: self.renderer_state,
+        }
     }
 
     fn prepare_frame<Message>(
@@ -1324,7 +1377,6 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "known cross-tree frame commit bug"]
     fn rejects_commit_of_frame_prepared_by_another_ui_tree()
     -> Result<(), Box<dyn std::error::Error>> {
         let target_view = Element::<()>::container([Element::text("target")]).key(1_u64);
@@ -1340,9 +1392,9 @@ mod tests {
         let prepared = foreign.prepare(&foreign_view, Size::new(7, 1), &mut renderer)?;
         let target_root = target.root().expect("target root exists");
 
-        assert!(
-            target.commit(prepared, &mut renderer).is_err(),
-            "a prepared frame must only commit to the UiTree that prepared it"
+        assert_eq!(
+            target.commit(prepared, &mut renderer),
+            Err(UiCommitError::ForeignTree)
         );
         assert_eq!(renderer.state_id(), renderer_state);
         assert_eq!(target.len(), 2);
@@ -1357,6 +1409,24 @@ mod tests {
                 .kind(),
             WidgetKind::Container
         );
+        Ok(())
+    }
+
+    #[test]
+    fn cloned_ui_trees_have_independent_frame_ownership() -> Result<(), UiError> {
+        let source = UiTree::new();
+        let mut cloned = source.clone();
+        let view = Element::<()>::text("frame");
+        let mut renderer = Renderer::new(Size::new(5, 1), WidthPolicy::Unicode);
+        let renderer_state = renderer.state_id();
+        let prepared = source.prepare(&view, Size::new(5, 1), &mut renderer)?;
+
+        assert_eq!(
+            cloned.commit(prepared, &mut renderer),
+            Err(UiCommitError::ForeignTree)
+        );
+        assert_eq!(renderer.state_id(), renderer_state);
+        assert!(cloned.is_empty());
         Ok(())
     }
 
