@@ -12,3 +12,4 @@ ignores:
   - "./.agents/**"
   - "./.claude/**"
   - "./target/**"
+  - "CLAUDE.md"
