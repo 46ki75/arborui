@@ -109,6 +109,13 @@ pub enum RuntimeError<BackendError> {
     Ui(UiError),
     /// Transactional UI and renderer commit failed.
     Commit(UiCommitError),
+    /// Application execution and subsequent terminal restoration both failed.
+    Restore {
+        /// The failure that stopped application execution.
+        error: Box<RuntimeError<BackendError>>,
+        /// The additional failure while restoring terminal state.
+        restore_error: BackendError,
+    },
 }
 
 impl<BackendError: fmt::Display> fmt::Display for RuntimeError<BackendError> {
@@ -117,6 +124,13 @@ impl<BackendError: fmt::Display> fmt::Display for RuntimeError<BackendError> {
             Self::Backend(error) => error.fmt(formatter),
             Self::Ui(error) => error.fmt(formatter),
             Self::Commit(error) => error.fmt(formatter),
+            Self::Restore {
+                error,
+                restore_error,
+            } => write!(
+                formatter,
+                "{error}; terminal restoration also failed: {restore_error}"
+            ),
         }
     }
 }
@@ -127,6 +141,7 @@ impl<BackendError: std::error::Error + 'static> std::error::Error for RuntimeErr
             Self::Backend(error) => Some(error),
             Self::Ui(error) => Some(error),
             Self::Commit(error) => Some(error),
+            Self::Restore { error, .. } => Some(error.as_ref()),
         }
     }
 }
@@ -567,7 +582,10 @@ where
         Ok(()) => session.restore().map_err(RuntimeError::Backend)?,
         Err(error) => {
             if let Err(restore_error) = session.restore() {
-                return Err(RuntimeError::Backend(restore_error));
+                return Err(RuntimeError::Restore {
+                    error: Box::new(error),
+                    restore_error,
+                });
             }
             return Err(error);
         }
@@ -580,6 +598,7 @@ mod tests {
     use std::{
         convert::Infallible,
         future::Future,
+        io,
         pin::Pin,
         sync::{
             Arc, Mutex,
@@ -844,6 +863,38 @@ mod tests {
         }
     }
 
+    struct DualFailureBackend {
+        capabilities: Capabilities,
+    }
+
+    impl TerminalBackend for DualFailureBackend {
+        type Error = io::Error;
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            Ok(Size::new(8, 2))
+        }
+
+        fn capabilities(&self) -> &Capabilities {
+            &self.capabilities
+        }
+
+        fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
+            Err(io::Error::other("poll failure"))
+        }
+
+        fn apply_state(&mut self, _desired: &TerminalState) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn write_patch(&mut self, _patch: &FramePatch) -> Result<WriteOutcome, Self::Error> {
+            Ok(WriteOutcome::Applied)
+        }
+
+        fn restore(&mut self) -> Result<(), Self::Error> {
+            Err(io::Error::other("restore failure"))
+        }
+    }
+
     fn session(
         outcomes: impl IntoIterator<Item = WriteOutcome>,
     ) -> Result<(TerminalSession<FakeBackend>, Arc<Mutex<BackendState>>), Infallible> {
@@ -1044,5 +1095,30 @@ mod tests {
         assert_eq!(state.patches.len(), 3);
         assert!(state.patches.iter().all(|patch| patch.full_repaint));
         Ok(())
+    }
+
+    #[test]
+    fn runtime_and_restore_failures_are_both_preserved() {
+        let result = run(
+            ViewApp::default(),
+            DualFailureBackend {
+                capabilities: Capabilities::default(),
+            },
+            TerminalState::default(),
+            Duration::ZERO,
+        );
+        let Err(RuntimeError::Restore {
+            error,
+            restore_error,
+        }) = result
+        else {
+            panic!("expected a combined runtime and restoration failure");
+        };
+
+        assert_eq!(restore_error.to_string(), "restore failure");
+        let RuntimeError::Backend(runtime_error) = *error else {
+            panic!("expected the original backend failure");
+        };
+        assert_eq!(runtime_error.to_string(), "poll failure");
     }
 }

@@ -56,7 +56,8 @@ where
                 height: f32::from(measured.height),
             }
         },
-    )?;
+    )
+    .map_err(engine_error)?;
 
     let mut layouts = vec![None; styles.len()];
     collect_layouts(
@@ -83,13 +84,15 @@ fn build_node(
         .get(node.index())
         .ok_or(LayoutError::UnknownNode(node))?;
     let backend = if children.is_empty() {
-        tree.new_leaf_with_context(taffy_style(*style), node)?
+        tree.new_leaf_with_context(taffy_style(*style), node)
+            .map_err(engine_error)?
     } else {
         let children = children
             .iter()
             .map(|child| build_node(tree, nodes, *child, backend_ids))
             .collect::<Result<Vec<_>, _>>()?;
-        tree.new_with_children(taffy_style(*style), &children)?
+        tree.new_with_children(taffy_style(*style), &children)
+            .map_err(engine_error)?
     };
     backend_ids[node.index()] = Some(backend);
     Ok(backend)
@@ -104,7 +107,7 @@ fn collect_layouts(
     output: &mut [Option<ComputedLayout>],
 ) -> Result<(), LayoutError> {
     let backend = backend_ids[node.index()].ok_or(LayoutError::UnknownNode(node))?;
-    let layout = tree.layout(backend)?;
+    let layout = tree.layout(backend).map_err(engine_error)?;
     let origin =
         parent_origin.translated(round_i32(layout.location.x), round_i32(layout.location.y));
     let bounds = Rect::from_origin_size(
@@ -210,10 +213,18 @@ fn insets(value: TaffyRect<f32>) -> Insets {
 
 fn available_space(value: TaffyAvailableSpace) -> AvailableSpace {
     match value {
-        TaffyAvailableSpace::Definite(value) => AvailableSpace::Definite(round_u16(value)),
+        TaffyAvailableSpace::Definite(value) => AvailableSpace::Definite(floor_u16(value)),
         TaffyAvailableSpace::MinContent => AvailableSpace::MinContent,
         TaffyAvailableSpace::MaxContent => AvailableSpace::MaxContent,
     }
+}
+
+fn engine_error(error: taffy::TaffyError) -> LayoutError {
+    LayoutError::Engine(error.to_string())
+}
+
+fn floor_u16(value: f32) -> u16 {
+    value.floor().clamp(0.0, f32::from(u16::MAX)) as u16
 }
 
 fn round_u16(value: f32) -> u16 {
@@ -222,4 +233,17 @@ fn round_u16(value: f32) -> u16 {
 
 fn round_i32(value: f32) -> i32 {
     value.round().clamp(i32::MIN as f32, i32::MAX as f32) as i32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn definite_measure_constraints_do_not_round_up() {
+        assert_eq!(
+            available_space(TaffyAvailableSpace::Definite(4.9)),
+            AvailableSpace::Definite(4)
+        );
+    }
 }

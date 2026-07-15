@@ -180,6 +180,26 @@ fn text_input_uses_renderer_width_and_accepts_alt_gr_characters() -> Result<(), 
 }
 
 #[test]
+fn text_input_ignores_alt_modified_characters() -> Result<(), Box<dyn Error>> {
+    let buffer = TextBuffer::new("");
+    let view = TextInput::new(&buffer, |updated| updated).build();
+    let mut tree = UiTree::new();
+    let mut renderer = Renderer::new(Size::new(4, 1), WidthPolicy::Unicode);
+    prepare_and_commit(&mut tree, &view, Size::new(4, 1), &mut renderer)?;
+
+    let alt = tree.dispatch(
+        &view,
+        &key(UiKey::Character('f'), KeyModifiers::ALT),
+        &renderer,
+    )?;
+    assert!(
+        alt.messages.is_empty(),
+        "Alt+f is an application shortcut, not text entry; it must not edit the buffer"
+    );
+    Ok(())
+}
+
+#[test]
 fn text_input_scrolls_horizontally_to_keep_cursor_visible() -> Result<(), Box<dyn Error>> {
     let buffer = TextBuffer::new("abcdef");
     let view = TextInput::new(&buffer, |updated| updated)

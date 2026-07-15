@@ -8,6 +8,7 @@ fuzz_target!(|data: &[u8]| {
     let mut input = Input::new(data);
     let initial = input.string(64);
     let mut buffer = TextBuffer::new(initial);
+    assert_invariants(&buffer);
 
     for _ in 0..256 {
         let Some(operation) = input.byte() else {
@@ -41,7 +42,10 @@ fn assert_invariants(buffer: &TextBuffer) {
     assert!(cursor <= text.len());
     assert!(text.is_char_boundary(cursor));
     assert!(is_grapheme_boundary(text, cursor));
-    assert!(!text.contains(['\r', '\n', '\t']));
+    assert!(
+        text.chars()
+            .all(|character| !character.is_control() && !matches!(character, '\u{2028}' | '\u{2029}'))
+    );
 
     if let Some(selection) = buffer.selection() {
         for endpoint in [selection.anchor().get(), selection.focus().get()] {

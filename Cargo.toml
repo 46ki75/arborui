@@ -17,7 +17,7 @@ keywords = ["terminal", "tui", "cli", "ui"]
 
 [workspace.dependencies]
 criterion = { version = "=0.7.0", default-features = false }
-insta = { version = "1.48.0", default-features = false }
+insta = { version = "=1.48.0", default-features = false }
 arborui-core = { path = "crates/arborui-core", version = "=0.1.0" }
 arborui-backend-crossterm = { path = "crates/arborui-backend-crossterm", version = "=0.1.0" }
 arborui-render = { path = "crates/arborui-render", version = "=0.1.0" }

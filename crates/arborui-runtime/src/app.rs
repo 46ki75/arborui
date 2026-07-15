@@ -8,6 +8,12 @@ pub trait Application {
     type Message: Send + 'static;
 
     /// Applies one message and describes any resulting effects.
+    ///
+    /// Visible model changes must call [`UpdateContext::invalidate`]. Without
+    /// invalidation the runtime does not rebuild [`Self::view`], and changing
+    /// view structure can make subsequent event reconciliation fail. Request
+    /// [`Invalidation::Paint`] for visual-only changes, [`Invalidation::Layout`]
+    /// for geometry changes, or [`Invalidation::Recompose`] for structural changes.
     fn update(
         &mut self,
         message: Self::Message,

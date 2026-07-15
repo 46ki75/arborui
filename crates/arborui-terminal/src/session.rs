@@ -73,7 +73,11 @@ impl<B: TerminalBackend> TerminalSession<B> {
         if self.suspended {
             return Ok(WriteOutcome::Deferred);
         }
-        self.backend.write_patch(patch)
+        let outcome = self.backend.write_patch(patch);
+        if matches!(outcome, Err(_) | Ok(WriteOutcome::StateUnknown)) {
+            self.full_repaint_required = true;
+        }
+        outcome
     }
 
     /// Restores terminal modes temporarily for a child process or shell.
@@ -244,8 +248,11 @@ mod tests {
     struct FailurePlan {
         applied: Arc<std::sync::atomic::AtomicUsize>,
         restored: Arc<std::sync::atomic::AtomicUsize>,
+        writes: Arc<std::sync::atomic::AtomicUsize>,
         fail_apply_on: usize,
         fail_restore_on: usize,
+        fail_write_on: usize,
+        unknown_write_on: usize,
     }
 
     struct FailingBackend {
@@ -281,6 +288,17 @@ mod tests {
         }
 
         fn write_patch(&mut self, _patch: &FramePatch) -> Result<WriteOutcome, Self::Error> {
+            let call = self
+                .plan
+                .writes
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                + 1;
+            if call == self.plan.fail_write_on {
+                return Err(io::Error::other("injected write failure"));
+            }
+            if call == self.plan.unknown_write_on {
+                return Ok(WriteOutcome::StateUnknown);
+            }
             Ok(WriteOutcome::Applied)
         }
 
@@ -302,6 +320,54 @@ mod tests {
             capabilities: Capabilities::default(),
             plan,
         }
+    }
+
+    #[test]
+    fn failed_write_requires_full_repaint() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_write_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan), TerminalState::fullscreen())?;
+        assert!(session.take_full_repaint_required());
+
+        let patch = FramePatch {
+            size: Size::new(80, 24),
+            runs: Vec::new(),
+            cursor: arborui_core::CursorState::default(),
+            cursor_changed: true,
+            full_repaint: false,
+        };
+        assert!(session.write_patch(&patch).is_err());
+        assert!(
+            session.take_full_repaint_required(),
+            "a failed patch write leaves physical screen state unknown, so the session \
+             must require a full repaint before the next diff"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn unknown_write_state_requires_full_repaint() -> io::Result<()> {
+        let plan = FailurePlan {
+            unknown_write_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan), TerminalState::fullscreen())?;
+        assert!(session.take_full_repaint_required());
+
+        let patch = FramePatch {
+            size: Size::new(80, 24),
+            runs: Vec::new(),
+            cursor: arborui_core::CursorState::default(),
+            cursor_changed: true,
+            full_repaint: false,
+        };
+        assert_eq!(session.write_patch(&patch)?, WriteOutcome::StateUnknown);
+        assert!(session.take_full_repaint_required());
+        Ok(())
     }
 
     #[test]

@@ -165,6 +165,8 @@ fn input_action(event: &UiEvent) -> Option<InputAction<'_>> {
                 || key.modifiers.contains(KeyModifiers::META)
                 || key.modifiers.contains(KeyModifiers::SUPER)
                 || key.modifiers.contains(KeyModifiers::HYPER);
+            let alt_shortcut = key.modifiers.contains(KeyModifiers::ALT)
+                && !key.modifiers.contains(KeyModifiers::CONTROL);
             match key.key {
                 UiKey::Backspace => Some(InputAction::Edit(TextEdit::Backspace)),
                 UiKey::Delete => Some(InputAction::Edit(TextEdit::Delete)),
@@ -187,7 +189,7 @@ fn input_action(event: &UiEvent) -> Option<InputAction<'_>> {
                 UiKey::Character(character) if command && character.eq_ignore_ascii_case(&'a') => {
                     Some(InputAction::Edit(TextEdit::SelectAll))
                 }
-                UiKey::Character(character) if !command => {
+                UiKey::Character(character) if !command && !alt_shortcut => {
                     Some(InputAction::InsertCharacter(character))
                 }
                 UiKey::Enter if key.action == KeyAction::Press => Some(InputAction::Submit),

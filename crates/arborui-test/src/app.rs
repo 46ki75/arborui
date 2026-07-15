@@ -57,6 +57,13 @@ pub enum TestError {
     Ui(UiError),
     /// Transactional UI commit failed.
     Commit(UiCommitError),
+    /// Runtime execution and terminal restoration both failed.
+    Restore {
+        /// The failure that stopped runtime execution.
+        error: Box<TestError>,
+        /// The additional terminal restoration failure.
+        restore_error: TestBackendError,
+    },
     /// Event dispatch could not reconcile the current view.
     Reconcile(ReconcileError),
     /// Manual time exceeded [`Duration::MAX`].
@@ -74,6 +81,13 @@ impl fmt::Display for TestError {
             Self::Backend(error) => error.fmt(formatter),
             Self::Ui(error) => error.fmt(formatter),
             Self::Commit(error) => error.fmt(formatter),
+            Self::Restore {
+                error,
+                restore_error,
+            } => write!(
+                formatter,
+                "{error}; terminal restoration also failed: {restore_error}"
+            ),
             Self::Reconcile(error) => error.fmt(formatter),
             Self::TimeOverflow => formatter.write_str("manual test clock overflowed"),
             Self::SettleLimit { turns } => {
@@ -89,6 +103,7 @@ impl Error for TestError {
             Self::Backend(error) => Some(error),
             Self::Ui(error) => Some(error),
             Self::Commit(error) => Some(error),
+            Self::Restore { error, .. } => Some(error.as_ref()),
             Self::Reconcile(error) => Some(error),
             Self::TimeOverflow | Self::SettleLimit { .. } => None,
         }
@@ -101,6 +116,13 @@ impl From<RuntimeError<TestBackendError>> for TestError {
             RuntimeError::Backend(error) => Self::Backend(error),
             RuntimeError::Ui(error) => Self::Ui(error),
             RuntimeError::Commit(error) => Self::Commit(error),
+            RuntimeError::Restore {
+                error,
+                restore_error,
+            } => Self::Restore {
+                error: Box::new(Self::from(*error)),
+                restore_error,
+            },
         }
     }
 }

@@ -40,7 +40,8 @@ pub use arborui_runtime::{
     TerminalRenderOutcome, UpdateContext, run, translate_terminal_event,
 };
 pub use arborui_terminal::{
-    Capabilities, TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
+    AutowrapMode, Capabilities, KeyboardMode, MouseMode, ScreenMode, TerminalBackend,
+    TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
 pub use arborui_text::{
     ByteOffset, Selection, TextBuffer, TextEdit, TextMetrics, TextMovement, WidthPolicy,

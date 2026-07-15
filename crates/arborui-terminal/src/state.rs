@@ -61,7 +61,7 @@ pub struct TerminalState {
     pub focus_reporting: bool,
     /// Whether frame writes use synchronized updates when supported.
     pub synchronized_updates: bool,
-    /// Optional terminal title.
+    /// Optional terminal title. Backends must discard embedded control characters.
     pub title: Option<String>,
     /// Automatic line-wrap state.
     pub autowrap: AutowrapMode,

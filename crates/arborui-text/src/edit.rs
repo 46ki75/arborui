@@ -74,8 +74,7 @@ pub enum TextMovement {
 pub enum TextEdit<'a> {
     /// Insert text at the cursor, replacing the selection.
     ///
-    /// Carriage returns and line feeds are omitted to preserve the single-line
-    /// invariant.
+    /// Control and line-break characters are omitted to preserve the single-line invariant.
     Insert(&'a str),
     /// Delete the selection or the grapheme preceding the cursor.
     Backspace,
@@ -108,7 +107,7 @@ pub struct TextBuffer {
 impl TextBuffer {
     /// Creates a buffer with the cursor at the end of `text`.
     ///
-    /// Carriage returns and line feeds are omitted, and tabs become spaces.
+    /// Control and line-break characters are omitted, and tabs become spaces.
     #[must_use]
     pub fn new(text: impl Into<String>) -> Self {
         let text = sanitize_single_line(text.into());
@@ -241,17 +240,27 @@ impl From<&str> for TextBuffer {
 }
 
 fn sanitize_single_line(text: String) -> String {
-    if text.contains(['\r', '\n', '\t']) {
+    if text
+        .chars()
+        .any(|character| character.is_control() || is_line_break(character))
+    {
         text.chars()
             .filter_map(|character| match character {
-                '\r' | '\n' => None,
                 '\t' => Some(' '),
+                character if character.is_control() || is_line_break(character) => None,
                 character => Some(character),
             })
             .collect()
     } else {
         text
     }
+}
+
+const fn is_line_break(character: char) -> bool {
+    matches!(
+        character,
+        '\n' | '\u{b}' | '\u{c}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
 }
 
 fn boundary_before(text: &str, offset: usize) -> Option<usize> {
@@ -283,6 +292,24 @@ mod tests {
             movement,
             extend_selection,
         }
+    }
+
+    #[test]
+    fn single_line_buffer_strips_all_line_break_characters() {
+        let mut buffer = TextBuffer::new("a\u{b}b\u{c}c\x1b\x07");
+        assert_eq!(
+            buffer.text(),
+            "abc",
+            "control characters, vertical tab, and form feed break the single-line invariant"
+        );
+
+        buffer.apply(TextEdit::Insert("d\u{85}e\u{2028}f\u{2029}g"));
+        assert_eq!(
+            buffer.text(),
+            "abcdefg",
+            "NEL and the Unicode line/paragraph separators break the single-line invariant"
+        );
+        assert_eq!(buffer.cursor().get(), buffer.text().len());
     }
 
     #[test]

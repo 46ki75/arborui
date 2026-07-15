@@ -12,10 +12,14 @@ pub use app::{SettleOutcome, SettleReport, TestApp, TestError};
 pub use backend::TestBackendError;
 pub use frame::{TestCell, TestCellContent, TestFrame};
 
-pub use arborui_core::{Point, Size};
+pub use arborui_core::{CursorState, Point, Size, Style};
+pub use arborui_render::{FramePatch, HyperlinkId};
+pub use arborui_runtime::{DispatchReport, EventProxy};
 pub use arborui_terminal::{
-    KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind, TerminalEvent,
+    KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind, TerminalEvent,
 };
+pub use arborui_text::WidthPolicy;
 pub use arborui_ui::{Key, NodeId, UiEvent};
 
 #[cfg(test)]

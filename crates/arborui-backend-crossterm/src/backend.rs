@@ -28,6 +28,8 @@ pub struct CrosstermBackend<W: Write + Send> {
     writer: W,
     capabilities: Capabilities,
     active: TerminalState,
+    confirmed: TerminalState,
+    keyboard_pushed: bool,
     original_raw_mode: bool,
 }
 
@@ -42,7 +44,9 @@ impl<W: Write + Send> CrosstermBackend<W> {
         Ok(Self {
             writer,
             capabilities: detect_capabilities(),
+            confirmed: active.clone(),
             active,
+            keyboard_pushed: false,
             original_raw_mode,
         })
     }
@@ -112,21 +116,25 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             enable_raw_mode()?;
             self.active.raw_mode = true;
         }
-        if desired.screen != self.active.screen {
+        if state_changed(desired.screen, self.active.screen, self.confirmed.screen) {
             match desired.screen {
                 ScreenMode::Main => self.writer.queue(LeaveAlternateScreen)?,
                 ScreenMode::Alternate => self.writer.queue(EnterAlternateScreen)?,
             };
             self.active.screen = desired.screen;
         }
-        if desired.mouse != self.active.mouse {
+        if state_changed(desired.mouse, self.active.mouse, self.confirmed.mouse) {
             match desired.mouse {
                 MouseMode::Disabled => self.writer.queue(DisableMouseCapture)?,
                 MouseMode::Capture => self.writer.queue(EnableMouseCapture)?,
             };
             self.active.mouse = desired.mouse;
         }
-        if desired.focus_reporting != self.active.focus_reporting {
+        if state_changed(
+            desired.focus_reporting,
+            self.active.focus_reporting,
+            self.confirmed.focus_reporting,
+        ) {
             if desired.focus_reporting {
                 self.writer.queue(EnableFocusChange)?;
             } else {
@@ -134,7 +142,11 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             }
             self.active.focus_reporting = desired.focus_reporting;
         }
-        if desired.bracketed_paste != self.active.bracketed_paste {
+        if state_changed(
+            desired.bracketed_paste,
+            self.active.bracketed_paste,
+            self.confirmed.bracketed_paste,
+        ) {
             if desired.bracketed_paste {
                 self.writer.queue(EnableBracketedPaste)?;
             } else {
@@ -142,18 +154,33 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             }
             self.active.bracketed_paste = desired.bracketed_paste;
         }
-        if desired.keyboard != self.active.keyboard {
+        if state_changed(
+            desired.keyboard,
+            self.active.keyboard,
+            self.confirmed.keyboard,
+        ) {
             match desired.keyboard {
-                KeyboardMode::Legacy => self.writer.queue(PopKeyboardEnhancementFlags)?,
-                KeyboardMode::Enhanced => self.writer.queue(PushKeyboardEnhancementFlags(
-                    KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                        | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
-                        | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
-                ))?,
-            };
+                KeyboardMode::Legacy if self.keyboard_pushed => {
+                    self.writer.queue(PopKeyboardEnhancementFlags)?;
+                    self.keyboard_pushed = false;
+                }
+                KeyboardMode::Enhanced if !self.keyboard_pushed => {
+                    self.writer.queue(PushKeyboardEnhancementFlags(
+                        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                            | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+                            | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES,
+                    ))?;
+                    self.keyboard_pushed = true;
+                }
+                KeyboardMode::Legacy | KeyboardMode::Enhanced => {}
+            }
             self.active.keyboard = desired.keyboard;
         }
-        if desired.autowrap != self.active.autowrap {
+        if state_changed(
+            desired.autowrap,
+            self.active.autowrap,
+            self.confirmed.autowrap,
+        ) {
             match desired.autowrap {
                 AutowrapMode::Disabled => self.writer.queue(DisableLineWrap)?,
                 AutowrapMode::Enabled | AutowrapMode::Preserve => {
@@ -162,20 +189,23 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             };
             self.active.autowrap = desired.autowrap;
         }
-        if desired.title != self.active.title {
-            self.writer
-                .queue(SetTitle(desired.title.as_deref().unwrap_or_default()))?;
+        if state_changed(&desired.title, &self.active.title, &self.confirmed.title) {
+            let title = sanitized_title(desired.title.as_deref().unwrap_or_default());
+            self.writer.queue(SetTitle(title))?;
             self.active.title.clone_from(&desired.title);
         }
-        if desired.cursor != self.active.cursor {
+        if state_changed(desired.cursor, self.active.cursor, self.confirmed.cursor) {
             self.apply_cursor(desired.cursor)?;
         }
         self.active.synchronized_updates = desired.synchronized_updates;
         self.writer.flush()?;
+        self.confirmed = desired.clone();
+        self.confirmed.raw_mode = self.active.raw_mode;
 
         if !desired.raw_mode && self.active.raw_mode {
             disable_raw_mode()?;
             self.active.raw_mode = false;
+            self.confirmed.raw_mode = false;
         }
         Ok(())
     }
@@ -189,31 +219,40 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
                 ..self.capabilities
             },
         )?;
-        self.active.cursor = patch.cursor;
+        if !patch.is_empty() {
+            self.active.cursor = patch.cursor;
+            self.confirmed.cursor = patch.cursor;
+        }
         Ok(WriteOutcome::Applied)
     }
 
     fn restore(&mut self) -> Result<(), Self::Error> {
         let output_result = (|| -> io::Result<()> {
-            if self.active.keyboard == KeyboardMode::Enhanced {
+            if self.keyboard_pushed {
                 self.writer.queue(PopKeyboardEnhancementFlags)?;
+                self.keyboard_pushed = false;
             }
-            if self.active.mouse == MouseMode::Capture {
+            if self.active.mouse == MouseMode::Capture || self.confirmed.mouse == MouseMode::Capture
+            {
                 self.writer.queue(DisableMouseCapture)?;
             }
-            if self.active.bracketed_paste {
+            if self.active.bracketed_paste || self.confirmed.bracketed_paste {
                 self.writer.queue(DisableBracketedPaste)?;
             }
-            if self.active.focus_reporting {
+            if self.active.focus_reporting || self.confirmed.focus_reporting {
                 self.writer.queue(DisableFocusChange)?;
             }
-            if self.active.screen == ScreenMode::Alternate {
+            if self.active.screen == ScreenMode::Alternate
+                || self.confirmed.screen == ScreenMode::Alternate
+            {
                 self.writer.queue(LeaveAlternateScreen)?;
             }
-            if self.active.autowrap == AutowrapMode::Disabled {
+            if self.active.autowrap == AutowrapMode::Disabled
+                || self.confirmed.autowrap == AutowrapMode::Disabled
+            {
                 self.writer.queue(EnableLineWrap)?;
             }
-            if self.active.title.is_some() {
+            if self.active.title.is_some() || self.confirmed.title.is_some() {
                 self.writer.queue(SetTitle(""))?;
             }
             self.writer.queue(SetAttribute(Attribute::Reset))?;
@@ -236,9 +275,21 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
                 raw_mode: self.original_raw_mode,
                 ..TerminalState::default()
             };
+            self.confirmed = self.active.clone();
         }
         result
     }
+}
+
+fn state_changed<T: PartialEq>(desired: T, active: T, confirmed: T) -> bool {
+    desired != active || desired != confirmed
+}
+
+fn sanitized_title(title: &str) -> String {
+    title
+        .chars()
+        .filter(|character| !character.is_control())
+        .collect()
 }
 
 fn detect_capabilities() -> Capabilities {
@@ -348,6 +399,66 @@ mod tests {
     }
 
     #[test]
+    fn empty_patch_does_not_update_tracked_cursor_state() -> io::Result<()> {
+        let mut backend = CrosstermBackend::new(Vec::new())?;
+        backend.apply_state(&TerminalState {
+            cursor: CursorState::visible(Point::ORIGIN),
+            ..TerminalState::default()
+        })?;
+
+        let empty = FramePatch {
+            size: Size::new(1, 1),
+            runs: Vec::new(),
+            cursor: CursorState::HIDDEN,
+            cursor_changed: false,
+            full_repaint: false,
+        };
+        assert_eq!(backend.write_patch(&empty)?, WriteOutcome::Applied);
+
+        backend.apply_state(&TerminalState {
+            cursor: CursorState::HIDDEN,
+            ..TerminalState::default()
+        })?;
+        let output = backend.into_inner()?;
+        let hide: &[u8] = b"\x1b[?25l";
+        assert!(
+            output.windows(hide.len()).any(|window| window == hide),
+            "the empty patch emitted no bytes, so hiding the cursor afterwards must \
+             still send a hide sequence"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn failed_apply_state_flush_is_resent_on_retry() -> io::Result<()> {
+        let writer = FailFlushOnce {
+            fail_on_flush: 1,
+            ..FailFlushOnce::default()
+        };
+        let mut backend = CrosstermBackend::new(writer)?;
+        let desired = TerminalState {
+            screen: ScreenMode::Alternate,
+            ..TerminalState::default()
+        };
+
+        assert!(backend.apply_state(&desired).is_err());
+        backend.apply_state(&desired)?;
+        let output = backend.into_inner()?;
+        let enter_alternate: &[u8] = b"\x1b[?1049h";
+        let enters = output
+            .bytes
+            .windows(enter_alternate.len())
+            .filter(|window| *window == enter_alternate)
+            .count();
+        assert_eq!(
+            enters, 2,
+            "a failed flush leaves delivery unconfirmed, so retrying the same desired \
+             state must re-send the mode changes"
+        );
+        Ok(())
+    }
+
+    #[test]
     fn failed_restore_keeps_active_state_for_retry() -> io::Result<()> {
         let writer = FailFlushOnce {
             fail_on_flush: 2,
@@ -369,6 +480,62 @@ mod tests {
     }
 
     #[test]
+    fn keyboard_stack_commands_are_not_repeated_after_failed_flushes() -> io::Result<()> {
+        let writer = FailFlushOnce {
+            fail_on_flush: 1,
+            ..FailFlushOnce::default()
+        };
+        let capabilities = Capabilities {
+            keyboard: KeyboardCapability::Enhanced,
+            ..Capabilities::default()
+        };
+        let mut backend = CrosstermBackend::new(writer)?.with_capabilities(capabilities);
+        let desired = TerminalState {
+            keyboard: KeyboardMode::Enhanced,
+            screen: ScreenMode::Alternate,
+            ..TerminalState::default()
+        };
+
+        assert!(backend.apply_state(&desired).is_err());
+        backend.apply_state(&desired)?;
+        backend.restore()?;
+        let output = backend.into_inner()?;
+        let pushes = output
+            .bytes
+            .windows(4)
+            .filter(|window| window.starts_with(b"\x1b[>"))
+            .count();
+        let pops = output
+            .bytes
+            .windows(3)
+            .filter(|window| *window == b"\x1b[<")
+            .count();
+        assert_eq!(pushes, 1);
+        assert_eq!(pops, 1);
+        Ok(())
+    }
+
+    #[test]
+    fn terminal_titles_cannot_inject_control_sequences() -> io::Result<()> {
+        let mut backend = CrosstermBackend::new(Vec::new())?;
+        backend.apply_state(&TerminalState {
+            title: Some(String::from("safe\x07\x1b]2;unsafe")),
+            ..TerminalState::default()
+        })?;
+        let output = backend.into_inner()?;
+
+        let injection: &[u8] = b"\x07\x1b]2;unsafe";
+        assert!(
+            !output
+                .windows(injection.len())
+                .any(|window| window == injection),
+            "BEL and ESC from the requested title must not terminate its OSC sequence"
+        );
+        assert!(output.windows(10).any(|window| window == b"safe]2;uns"));
+        Ok(())
+    }
+
+    #[test]
     fn effective_state_preserves_preexisting_raw_mode() {
         let backend = CrosstermBackend {
             writer: Vec::new(),
@@ -377,6 +544,11 @@ mod tests {
                 raw_mode: true,
                 ..TerminalState::default()
             },
+            confirmed: TerminalState {
+                raw_mode: true,
+                ..TerminalState::default()
+            },
+            keyboard_pushed: false,
             original_raw_mode: true,
         };
 

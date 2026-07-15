@@ -168,6 +168,8 @@ The meanings are strict:
 | `StateUnknown` | Output may be partial | Force full repaint |
 
 A backend must not report `Deferred` after applying a prefix of a patch.
+Returning an error also means output may be partial. `TerminalSession` records
+a full-repaint requirement before forwarding that error to its caller.
 
 Local terminal output may use blocking `write_all`. Remote or buffered backends
 may queue bytes and report `Applied` once they assume responsibility for

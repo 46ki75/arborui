@@ -36,6 +36,9 @@ pub trait TerminalBackend: Send {
     fn apply_state(&mut self, desired: &TerminalState) -> Result<(), Self::Error>;
 
     /// Delivers a complete frame patch.
+    ///
+    /// An error means output may have been applied partially, so callers must
+    /// treat physical screen state as unknown and force a full repaint.
     fn write_patch(&mut self, patch: &FramePatch) -> Result<WriteOutcome, Self::Error>;
 
     /// Restores terminal modes owned by this backend.

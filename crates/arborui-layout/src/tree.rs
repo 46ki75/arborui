@@ -60,12 +60,6 @@ impl fmt::Display for LayoutError {
 
 impl std::error::Error for LayoutError {}
 
-impl From<taffy::TaffyError> for LayoutError {
-    fn from(error: taffy::TaffyError) -> Self {
-        Self::Engine(error.to_string())
-    }
-}
-
 #[derive(Clone, Debug)]
 struct Node {
     style: LayoutStyle,
