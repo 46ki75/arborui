@@ -1,4 +1,9 @@
-use std::{collections::HashMap, fmt, sync::Arc};
+use std::{
+    collections::HashMap,
+    fmt,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use arborui_core::{CursorState, CursorVisibility, Point, Rect, Size, Style};
 use arborui_layout::{LayoutError, LayoutNodeId, LayoutTree};
@@ -128,6 +133,21 @@ pub struct PreparedUiFrame {
     base_revision: u64,
 }
 
+/// Time spent in the opt-in phases of UI frame preparation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct UiPreparationTimings {
+    /// Time spent cloning retained state, reconciling the declarative tree, and
+    /// applying viewport invalidation.
+    pub staging_reconciliation: Duration,
+    /// Time spent constructing and computing layout, assigning geometry,
+    /// repairing focus state, and resolving the cursor.
+    pub layout: Duration,
+    /// Time spent painting through the renderer.
+    pub paint: Duration,
+    /// Time spent diffing and constructing the renderer's prepared frame.
+    pub diff: Duration,
+}
+
 #[derive(Clone, Debug)]
 struct UiTreeOwner(Arc<()>);
 
@@ -148,6 +168,12 @@ struct PaintContext {
     clip: Rect,
     hit: Option<HitId>,
     style: Style,
+    focused: Option<NodeId>,
+}
+
+struct FrameLayout {
+    root: NodeId,
+    cursor: CursorState,
     focused: Option<NodeId>,
 }
 
@@ -559,13 +585,57 @@ impl UiTree {
         renderer: &mut Renderer,
     ) -> Result<PreparedUiFrame, UiError> {
         let mut staged = self.clone_for_staging();
-        let frame = staged.prepare_frame(element, viewport, renderer)?;
+        staged.stage_frame(element, viewport)?;
+        let layout = staged.layout_frame(element, viewport, renderer.width_policy())?;
+        let frame = renderer.prepare(viewport, layout.cursor, |canvas| {
+            staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
+        })?;
+        staged.finish_frame();
         Ok(PreparedUiFrame {
             owner: self.owner.clone(),
             frame,
             tree: staged,
             base_revision: self.revision,
         })
+    }
+
+    /// Reconciles, lays out, and paints a complete headless frame while
+    /// measuring each preparation phase.
+    pub fn prepare_timed<Message>(
+        &self,
+        element: &Element<'_, Message>,
+        viewport: Size,
+        renderer: &mut Renderer,
+    ) -> Result<(PreparedUiFrame, UiPreparationTimings), UiError> {
+        let staging_started = Instant::now();
+        let mut staged = self.clone_for_staging();
+        staged.stage_frame(element, viewport)?;
+        let staging_reconciliation = staging_started.elapsed();
+
+        let layout_started = Instant::now();
+        let layout = staged.layout_frame(element, viewport, renderer.width_policy())?;
+        let layout_elapsed = layout_started.elapsed();
+
+        let (frame, renderer_timings) =
+            renderer.prepare_timed(viewport, layout.cursor, |canvas| {
+                staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
+            })?;
+        staged.finish_frame();
+        let prepared = PreparedUiFrame {
+            owner: self.owner.clone(),
+            frame,
+            tree: staged,
+            base_revision: self.revision,
+        };
+        Ok((
+            prepared,
+            UiPreparationTimings {
+                staging_reconciliation,
+                layout: layout_elapsed,
+                paint: renderer_timings.paint,
+                diff: renderer_timings.diff,
+            },
+        ))
     }
 
     fn clone_for_staging(&self) -> Self {
@@ -587,18 +657,25 @@ impl UiTree {
         }
     }
 
-    fn prepare_frame<Message>(
+    fn stage_frame<Message>(
         &mut self,
         element: &Element<'_, Message>,
         viewport: Size,
-        renderer: &mut Renderer,
-    ) -> Result<PreparedFrame, UiError> {
+    ) -> Result<(), UiError> {
         self.reconcile(element)?;
         if self.viewport != Some(viewport) {
             self.pending.request(Invalidation::Layout);
             self.viewport = Some(viewport);
         }
+        Ok(())
+    }
 
+    fn layout_frame<Message>(
+        &mut self,
+        element: &Element<'_, Message>,
+        viewport: Size,
+        width_policy: arborui_text::WidthPolicy,
+    ) -> Result<FrameLayout, UiError> {
         let root = self.root.expect("reconciliation always creates a root");
         let mut layout_tree = LayoutTree::new();
         let mut mapping = Vec::with_capacity(self.nodes.len());
@@ -607,7 +684,6 @@ impl UiTree {
             .iter()
             .map(|(layout, _, element)| (*layout, *element))
             .collect::<HashMap<_, _>>();
-        let width_policy = renderer.width_policy();
         layout_tree.compute(layout_root, viewport, |node, input| {
             let Some(element) = by_layout.get(&node) else {
                 return Size::ZERO;
@@ -646,25 +722,39 @@ impl UiTree {
             .collect::<HashMap<_, _>>();
         let cursor = self.resolve_cursor(&by_retained, viewport, width_policy);
         let focused = self.focused();
+        Ok(FrameLayout {
+            root,
+            cursor,
+            focused,
+        })
+    }
 
-        let prepared = renderer.prepare(viewport, cursor, |canvas| {
-            self.paint_node(
-                root,
-                element,
-                canvas,
-                PaintContext {
-                    clip: Rect::from_origin_size(Point::ORIGIN, viewport),
-                    hit: None,
-                    style: Style::default(),
-                    focused,
-                },
-            )
-        })?;
+    fn paint_frame<Message>(
+        &self,
+        element: &Element<'_, Message>,
+        canvas: &mut Canvas<'_>,
+        viewport: Size,
+        root: NodeId,
+        focused: Option<NodeId>,
+    ) -> Result<(), DrawError> {
+        self.paint_node(
+            root,
+            element,
+            canvas,
+            PaintContext {
+                clip: Rect::from_origin_size(Point::ORIGIN, viewport),
+                hit: None,
+                style: Style::default(),
+                focused,
+            },
+        )
+    }
+
+    fn finish_frame(&mut self) {
         self.pending = Invalidation::None;
         for node in self.nodes.values_mut() {
             node.invalidation = Invalidation::None;
         }
-        Ok(prepared)
     }
 
     fn reconcile_node<Message>(
@@ -1413,6 +1503,45 @@ mod tests {
             Size::new(8, 2)
         );
         assert_eq!(tree.pending_invalidation(), Invalidation::None);
+        Ok(())
+    }
+
+    #[test]
+    fn timed_preparation_matches_untimed_state_and_commit() -> Result<(), UiError> {
+        let size = Size::new(5, 1);
+        let view = Element::<()>::text("hello").interactive(true);
+        let mut untimed_tree = UiTree::new();
+        let mut timed_tree = UiTree::new();
+        let mut untimed_renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut timed_renderer = Renderer::new(size, WidthPolicy::Unicode);
+
+        let untimed = untimed_tree.prepare(&view, size, &mut untimed_renderer)?;
+        let (timed, _timings) = timed_tree.prepare_timed(&view, size, &mut timed_renderer)?;
+        assert_eq!(timed.patch(), untimed.patch());
+        assert_eq!(timed.buffer(), untimed.buffer());
+        assert_eq!(timed.hit_map(), untimed.hit_map());
+        assert!(untimed_tree.is_empty());
+        assert!(timed_tree.is_empty());
+
+        assert_eq!(untimed_tree.commit(untimed, &mut untimed_renderer), Ok(()));
+        assert_eq!(timed_tree.commit(timed, &mut timed_renderer), Ok(()));
+        assert_eq!(timed_tree.root(), untimed_tree.root());
+        assert_eq!(timed_tree.len(), untimed_tree.len());
+        assert_eq!(timed_tree.pending_invalidation(), Invalidation::None);
+        assert_eq!(timed_renderer.current(), untimed_renderer.current());
+        assert_eq!(timed_renderer.hit_map(), untimed_renderer.hit_map());
+
+        let root = timed_tree.root().expect("committed tree has a root");
+        assert_eq!(
+            timed_tree
+                .node(root)
+                .expect("committed root exists")
+                .layout(),
+            untimed_tree
+                .node(root)
+                .expect("committed root exists")
+                .layout()
+        );
         Ok(())
     }
 

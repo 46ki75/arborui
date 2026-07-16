@@ -22,4 +22,4 @@ pub use invalidation::Invalidation;
 pub use key::Key;
 pub use node::{NodeId, RetainedNode};
 pub use reconcile::{ReconcileError, ReconcileReport};
-pub use tree::{PreparedUiFrame, UiCommitError, UiError, UiTree};
+pub use tree::{PreparedUiFrame, UiCommitError, UiError, UiPreparationTimings, UiTree};

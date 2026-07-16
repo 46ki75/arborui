@@ -1,11 +1,19 @@
-use std::{collections::VecDeque, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
+use std::{
+    collections::VecDeque,
+    fmt,
+    num::NonZeroUsize,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use arborui_core::Size;
 use arborui_render::Renderer;
 use arborui_terminal::{
     TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
-use arborui_ui::{Invalidation, ReconcileError, UiCommitError, UiError, UiEvent, UiTree};
+use arborui_ui::{
+    Invalidation, ReconcileError, UiCommitError, UiError, UiEvent, UiPreparationTimings, UiTree,
+};
 
 use crate::{
     Application, Clock, Command, SystemClock, UpdateContext,
@@ -132,6 +140,45 @@ pub enum TerminalRenderOutcome {
     Deferred,
     /// Output may be partial; the frame was discarded and full repaint was forced.
     StateUnknown,
+}
+
+/// Durations recorded for one opt-in application render attempt.
+///
+/// The selected phases do not necessarily sum exactly to [`Self::total`],
+/// which also includes orchestration and timing overhead.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct RenderTimings {
+    /// Complete non-idle render attempt.
+    pub total: Duration,
+    /// Application view construction before preparation and after commit.
+    pub view_construction: Duration,
+    /// Retained-state staging and reconciliation.
+    pub staging_reconciliation: Duration,
+    /// Layout construction, computation, geometry assignment, and cursor resolution.
+    pub layout: Duration,
+    /// Logical frame allocation and painting.
+    pub paint: Duration,
+    /// Terminal-independent frame comparison and patch construction.
+    pub diff: Duration,
+    /// Backend validation, serialization, writer calls, and flush.
+    ///
+    /// This is `None` for headless rendering and empty patches.
+    pub terminal_serialization_and_write: Option<Duration>,
+    /// Transactional retained-tree and renderer commit.
+    ///
+    /// This is `None` when a prepared frame was discarded.
+    pub commit: Option<Duration>,
+    /// Focus and hover refresh performed after a successful commit.
+    pub post_commit: Option<Duration>,
+}
+
+/// An ordinary render outcome accompanied by opt-in phase timings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimedRender<Outcome> {
+    /// Ordinary render outcome.
+    pub outcome: Outcome,
+    /// Recorded phases, or `None` when the render was visually idle.
+    pub timings: Option<RenderTimings>,
 }
 
 /// Failure from the UI pipeline or terminal backend.
@@ -482,6 +529,51 @@ impl<A: Application> AppRunner<A> {
         Ok(HeadlessRenderOutcome::Committed)
     }
 
+    /// Prepares and commits one headless frame while recording phase durations.
+    pub fn render_headless_timed(
+        &mut self,
+    ) -> Result<TimedRender<HeadlessRenderOutcome>, HeadlessRenderError> {
+        if self.invalidation == Invalidation::None {
+            return Ok(TimedRender {
+                outcome: HeadlessRenderOutcome::Idle,
+                timings: None,
+            });
+        }
+        let total_started = Instant::now();
+        let (prepared, preparation, mut view_construction) = {
+            let view_started = Instant::now();
+            let view = self.application.view();
+            let view_construction = view_started.elapsed();
+            let (prepared, preparation) = self
+                .ui
+                .prepare_timed(&view, self.viewport, &mut self.renderer)
+                .map_err(HeadlessRenderError::Ui)?;
+            (prepared, preparation, view_construction)
+        };
+        let commit_started = Instant::now();
+        self.ui
+            .commit(prepared, &mut self.renderer)
+            .map_err(HeadlessRenderError::Commit)?;
+        let commit = commit_started.elapsed();
+        self.invalidation = Invalidation::None;
+        let (refresh_view, post_commit) = self
+            .refresh_after_commit_timed()
+            .map_err(HeadlessRenderError::Ui)?;
+        view_construction = view_construction.saturating_add(refresh_view);
+        let timings = render_timings(
+            total_started.elapsed(),
+            view_construction,
+            preparation,
+            None,
+            Some(commit),
+            Some(post_commit),
+        );
+        Ok(TimedRender {
+            outcome: HeadlessRenderOutcome::Committed,
+            timings: Some(timings),
+        })
+    }
+
     /// Attempts one transactional frame write through a terminal session.
     pub fn render_terminal<B: TerminalBackend>(
         &mut self,
@@ -546,6 +638,102 @@ impl<A: Application> AppRunner<A> {
                 Ok(TerminalRenderOutcome::StateUnknown)
             }
         }
+    }
+
+    /// Attempts one transactional terminal write while recording phase durations.
+    pub fn render_terminal_timed<B: TerminalBackend>(
+        &mut self,
+        session: &mut TerminalSession<B>,
+    ) -> Result<TimedRender<TerminalRenderOutcome>, RuntimeError<B::Error>> {
+        let total_started = Instant::now();
+        let width_policy = session.capabilities().width_policy;
+        if self.renderer.width_policy() != width_policy {
+            self.renderer.set_width_policy(width_policy);
+            self.invalidation.request(Invalidation::Layout);
+        }
+        if session.take_full_repaint_required() {
+            self.renderer.invalidate();
+            self.invalidation.request(Invalidation::Paint);
+        }
+        let viewport = session.size().map_err(RuntimeError::Backend)?;
+        if viewport != self.viewport {
+            self.viewport = viewport;
+            self.invalidation.request(Invalidation::Layout);
+        }
+        if self.invalidation == Invalidation::None {
+            return Ok(TimedRender {
+                outcome: TerminalRenderOutcome::Idle,
+                timings: None,
+            });
+        }
+
+        let (prepared, preparation, mut view_construction) = {
+            let view_started = Instant::now();
+            let view = self.application.view();
+            let view_construction = view_started.elapsed();
+            let (prepared, preparation) = self
+                .ui
+                .prepare_timed(&view, self.viewport, &mut self.renderer)
+                .map_err(RuntimeError::Ui)?;
+            (prepared, preparation, view_construction)
+        };
+        let (outcome, terminal_serialization_and_write) = if prepared.patch().is_empty() {
+            (WriteOutcome::Applied, None)
+        } else {
+            let write_started = Instant::now();
+            match session.write_patch(prepared.patch()) {
+                Ok(outcome) => (outcome, Some(write_started.elapsed())),
+                Err(error) => {
+                    self.ui.discard(prepared, &mut self.renderer);
+                    self.renderer.invalidate();
+                    return Err(RuntimeError::Backend(error));
+                }
+            }
+        };
+
+        let (outcome, commit, post_commit) = match outcome {
+            WriteOutcome::Applied => {
+                let commit_started = Instant::now();
+                if let Err(error) = self.ui.commit(prepared, &mut self.renderer) {
+                    self.renderer.invalidate();
+                    self.invalidation.request(Invalidation::Paint);
+                    return Err(RuntimeError::Commit(error));
+                }
+                let commit = commit_started.elapsed();
+                self.invalidation = Invalidation::None;
+                let (refresh_view, post_commit) = self
+                    .refresh_after_commit_timed()
+                    .map_err(RuntimeError::Ui)?;
+                view_construction = view_construction.saturating_add(refresh_view);
+                (
+                    TerminalRenderOutcome::Applied,
+                    Some(commit),
+                    Some(post_commit),
+                )
+            }
+            WriteOutcome::Deferred => {
+                self.ui.discard(prepared, &mut self.renderer);
+                (TerminalRenderOutcome::Deferred, None, None)
+            }
+            WriteOutcome::StateUnknown => {
+                self.ui.discard(prepared, &mut self.renderer);
+                self.renderer.invalidate();
+                self.invalidation.request(Invalidation::Paint);
+                (TerminalRenderOutcome::StateUnknown, None, None)
+            }
+        };
+        let timings = render_timings(
+            total_started.elapsed(),
+            view_construction,
+            preparation,
+            terminal_serialization_and_write,
+            commit,
+            post_commit,
+        );
+        Ok(TimedRender {
+            outcome,
+            timings: Some(timings),
+        })
     }
 
     /// Runs terminal polling, serialized updates, and rendering until quit.
@@ -667,6 +855,41 @@ impl<A: Application> AppRunner<A> {
         self.invalidation.request(self.ui.pending_invalidation());
         self.messages.extend(outcome.messages);
         Ok(())
+    }
+
+    fn refresh_after_commit_timed(&mut self) -> Result<(Duration, Duration), UiError> {
+        let view_started = Instant::now();
+        let view = self.application.view();
+        let view_construction = view_started.elapsed();
+        let refresh_started = Instant::now();
+        let outcome = self
+            .ui
+            .refresh_hover(&view, &self.renderer)
+            .map_err(UiError::Reconcile)?;
+        self.invalidation.request(self.ui.pending_invalidation());
+        self.messages.extend(outcome.messages);
+        Ok((view_construction, refresh_started.elapsed()))
+    }
+}
+
+fn render_timings(
+    total: Duration,
+    view_construction: Duration,
+    preparation: UiPreparationTimings,
+    terminal_serialization_and_write: Option<Duration>,
+    commit: Option<Duration>,
+    post_commit: Option<Duration>,
+) -> RenderTimings {
+    RenderTimings {
+        total,
+        view_construction,
+        staging_reconciliation: preparation.staging_reconciliation,
+        layout: preparation.layout,
+        paint: preparation.paint,
+        diff: preparation.diff,
+        terminal_serialization_and_write,
+        commit,
+        post_commit,
     }
 }
 
@@ -1353,6 +1576,30 @@ mod tests {
     }
 
     #[test]
+    fn timed_headless_render_reports_phases_and_skips_idle_work()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (terminal, _state) = session([])?;
+        let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+
+        let rendered = runner.render_headless_timed()?;
+
+        assert_eq!(rendered.outcome, HeadlessRenderOutcome::Committed);
+        let timings = rendered.timings.expect("committed render must be timed");
+        assert_eq!(timings.terminal_serialization_and_write, None);
+        assert!(timings.commit.is_some());
+        assert!(timings.post_commit.is_some());
+        assert_timing_bounds(timings);
+        assert_eq!(
+            runner.render_headless_timed()?,
+            TimedRender {
+                outcome: HeadlessRenderOutcome::Idle,
+                timings: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
     fn invalidations_coalesce_into_one_frame() -> Result<(), Box<dyn std::error::Error>> {
         let (terminal, _state) = session([])?;
         let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
@@ -1403,6 +1650,102 @@ mod tests {
         assert_eq!(state.patches.len(), 3);
         assert!(state.patches.iter().all(|patch| patch.full_repaint));
         Ok(())
+    }
+
+    #[test]
+    fn timed_terminal_render_preserves_write_outcome_transactions()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut terminal, _state) = session([
+            WriteOutcome::Deferred,
+            WriteOutcome::StateUnknown,
+            WriteOutcome::Applied,
+        ])?;
+        let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+
+        for expected in [
+            TerminalRenderOutcome::Deferred,
+            TerminalRenderOutcome::StateUnknown,
+        ] {
+            let rendered = runner.render_terminal_timed(&mut terminal)?;
+            assert_eq!(rendered.outcome, expected);
+            let timings = rendered.timings.expect("attempted write must be timed");
+            assert!(timings.terminal_serialization_and_write.is_some());
+            assert_eq!(timings.commit, None);
+            assert_eq!(timings.post_commit, None);
+            assert_timing_bounds(timings);
+            assert!(runner.ui_tree().is_empty());
+        }
+
+        let applied = runner.render_terminal_timed(&mut terminal)?;
+        assert_eq!(applied.outcome, TerminalRenderOutcome::Applied);
+        let timings = applied.timings.expect("applied write must be timed");
+        assert!(timings.terminal_serialization_and_write.is_some());
+        assert!(timings.commit.is_some());
+        assert!(timings.post_commit.is_some());
+        assert_timing_bounds(timings);
+        assert!(!runner.ui_tree().is_empty());
+        assert_eq!(
+            runner.render_terminal_timed(&mut terminal)?,
+            TimedRender {
+                outcome: TerminalRenderOutcome::Idle,
+                timings: None,
+            }
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn timed_empty_patch_commits_without_backend_output() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let (mut terminal, state) = session([])?;
+        let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+        assert_eq!(
+            runner.render_terminal(&mut terminal)?,
+            TerminalRenderOutcome::Applied
+        );
+        runner.enqueue(ViewMessage::Invalidate(Invalidation::Paint));
+        assert_eq!(runner.process_pending().updates, 1);
+
+        let rendered = runner.render_terminal_timed(&mut terminal)?;
+
+        assert_eq!(rendered.outcome, TerminalRenderOutcome::Applied);
+        let timings = rendered
+            .timings
+            .expect("empty prepared frame must be timed");
+        assert_eq!(timings.terminal_serialization_and_write, None);
+        assert!(timings.commit.is_some());
+        assert!(timings.post_commit.is_some());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .patches
+                .len(),
+            1
+        );
+        Ok(())
+    }
+
+    fn assert_timing_bounds(timings: RenderTimings) {
+        for phase in [
+            timings.view_construction,
+            timings.staging_reconciliation,
+            timings.layout,
+            timings.paint,
+            timings.diff,
+        ] {
+            assert!(timings.total >= phase);
+        }
+        for phase in [
+            timings.terminal_serialization_and_write,
+            timings.commit,
+            timings.post_commit,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            assert!(timings.total >= phase);
+        }
     }
 
     #[test]

@@ -5,6 +5,7 @@ use std::{
         Arc,
         atomic::{AtomicU64, Ordering},
     },
+    time::{Duration, Instant},
 };
 
 use arborui_core::{CursorState, Point, Size, Style};
@@ -486,6 +487,16 @@ pub struct PreparedFrame {
     generation: u64,
 }
 
+/// Time spent in the opt-in phases of renderer frame preparation.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct FramePreparationTimings {
+    /// Time spent allocating frame storage, cloning graphemes, setting up the
+    /// canvas, and running the paint closure.
+    pub paint: Duration,
+    /// Time spent diffing the painted frame and constructing the prepared frame.
+    pub diff: Duration,
+}
+
 impl PartialEq for PreparedFrame {
     fn eq(&self, other: &Self) -> bool {
         self.next == other.next
@@ -669,13 +680,55 @@ impl Renderer {
     where
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
+        let (next, hit_map, graphemes) = self.paint_frame(size, paint)?;
+        self.diff_frame(next, hit_map, graphemes, cursor)
+    }
+
+    /// Paints and diffs a complete logical frame while measuring each phase.
+    pub fn prepare_timed<F>(
+        &mut self,
+        size: Size,
+        cursor: CursorState,
+        paint: F,
+    ) -> Result<(PreparedFrame, FramePreparationTimings), RenderError>
+    where
+        F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
+    {
+        let paint_started = Instant::now();
+        let (next, hit_map, graphemes) = self.paint_frame(size, paint)?;
+        let paint = paint_started.elapsed();
+
+        let diff_started = Instant::now();
+        let prepared = self.diff_frame(next, hit_map, graphemes, cursor)?;
+        let diff = diff_started.elapsed();
+        Ok((prepared, FramePreparationTimings { paint, diff }))
+    }
+
+    fn paint_frame<F>(
+        &self,
+        size: Size,
+        paint: F,
+    ) -> Result<(Buffer, HitMap, GraphemeStore), RenderError>
+    where
+        F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
+    {
         let mut next = Buffer::new(size);
         let mut hit_map = HitMap::new(size);
         let mut graphemes = self.graphemes.clone();
         let mut canvas =
             Canvas::with_hit_map(&mut next, &mut graphemes, &mut hit_map, self.width_policy);
         paint(&mut canvas)?;
+        Ok((next, hit_map, graphemes))
+    }
 
+    fn diff_frame(
+        &self,
+        next: Buffer,
+        hit_map: HitMap,
+        graphemes: GraphemeStore,
+        cursor: CursorState,
+    ) -> Result<PreparedFrame, RenderError> {
+        let size = next.size();
         let full_repaint = self.force_full_repaint || self.current.size() != size;
         let patch = diff(
             &self.current,
@@ -886,6 +939,43 @@ mod tests {
 
         assert!(second.patch().is_empty());
         assert!(!second.patch().full_repaint);
+        Ok(())
+    }
+
+    #[test]
+    fn timed_preparation_matches_untimed_state_and_commit() -> Result<(), RenderError> {
+        let size = Size::new(3, 1);
+        let mut untimed_renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut timed_renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let untimed = untimed_renderer.prepare(size, CursorState::default(), |canvas| {
+            canvas.draw_text(Point::ORIGIN, "abc", Style::default(), None)?;
+            Ok(())
+        })?;
+        let (timed, _timings) =
+            timed_renderer.prepare_timed(size, CursorState::default(), |canvas| {
+                canvas.draw_text(Point::ORIGIN, "abc", Style::default(), None)?;
+                Ok(())
+            })?;
+
+        assert_eq!(timed.patch(), untimed.patch());
+        assert_eq!(timed.buffer(), untimed.buffer());
+        assert_eq!(timed.hit_map(), untimed.hit_map());
+        assert_eq!(untimed_renderer.commit(untimed), Ok(()));
+        assert_eq!(timed_renderer.commit(timed), Ok(()));
+        assert_eq!(timed_renderer.current(), untimed_renderer.current());
+        assert_eq!(timed_renderer.hit_map(), untimed_renderer.hit_map());
+
+        let untimed_retry = untimed_renderer.prepare(size, CursorState::default(), |canvas| {
+            canvas.draw_text(Point::ORIGIN, "abc", Style::default(), None)?;
+            Ok(())
+        })?;
+        let (timed_retry, _timings) =
+            timed_renderer.prepare_timed(size, CursorState::default(), |canvas| {
+                canvas.draw_text(Point::ORIGIN, "abc", Style::default(), None)?;
+                Ok(())
+            })?;
+        assert_eq!(timed_retry.patch(), untimed_retry.patch());
+        assert!(timed_retry.patch().is_empty());
         Ok(())
     }
 

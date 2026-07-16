@@ -455,9 +455,10 @@ construction, overscan, stable-key selection, collection focus, resize, and
 bounded retained tree size through facade-only tests and benchmarks. A matched,
 isolated Ratatui 0.30.2 package now proves semantic and character-frame parity,
 bounded million-row construction, idle policy, expanded complete logical-turn
-timings, and production Crossterm serialization counts. Allocations, retained
-memory, phase timings, table and select controls, and the complete
-production-scale proof remain planned.
+timings, production Crossterm serialization counts, isolated allocation and
+retained-memory measurements, and ArborUI render-phase attribution. Table and
+select controls, broader workload baselines, optimization evidence, and the
+complete production-scale proof remain planned.
 
 Deliver:
 
@@ -482,7 +483,9 @@ without a configured bound or observable pressure signal.
 
 ### Milestone 12: Performance Evidence And Incremental Work
 
-Status: planned.
+Status: planned. Milestone 11 has established the first application-level
+allocation, retained-memory, and phase-timing baseline, but cross-workload
+instrumentation and optimization evidence remain open.
 
 Deliver:
 

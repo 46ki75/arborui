@@ -64,6 +64,12 @@ comparison-bench:
 comparison-output-metrics:
     CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 test --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --test output_metrics --locked -- --nocapture
 
+comparison-memory-metrics:
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 test --release --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --test memory_metrics --locked -- --ignored --nocapture
+
+comparison-phase-metrics:
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 test --release --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --test phase_metrics --locked -- --ignored --nocapture
+
 package-check:
     bash scripts/check-package-contents.sh
 

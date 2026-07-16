@@ -182,7 +182,7 @@ latency difference is not attributable to one isolated subsystem: ArborUI's
 message-to-settled-frame path includes runtime settlement, retained
 reconciliation, layout, hit geometry, and cloned test patches, while the matched
 Ratatui application directly updates and redraws an immediate buffer. Production
-allocation counts and retained memory are not measured yet.
+allocation counts and retained memory are measured separately below.
 
 The matched benchmark now also isolates cold initial render, Page Down, End,
 resize, selection, reverse, and unchanged redraw at 100,000 items. One optimized
@@ -222,7 +222,37 @@ not operating-system syscalls.
 Ratatui resize includes its production clear and therefore two flushes. ArborUI
 suppresses empty prepared patches before backend output; Ratatui's empty diff
 still emits 19 bytes of reset commands and flushes. Transport-level buffering,
-allocations, retained memory, and phase costs remain separate measurements.
+allocations, retained memory, and phase costs use separate probes so their
+instrumentation does not perturb the latency or serializer results above.
+
+The allocation probe runs one release-mode DHAT process per case. It separates
+the O(n) generated model from first-frame framework state. Model retained bytes
+grow from 148,987 at 1,000 items to 148,999,987 at one million items. In
+contrast, first-render retained bytes remain exactly 97,484 for ArborUI fixed,
+92,988 for ArborUI variable, and 82,944 for both Ratatui modes at every tested
+item count. All tracked live allocations return to zero after dropping each
+measured result.
+
+At 100,000 fixed-height items, Page Down allocates and retains 122,177/44,884
+bytes in ArborUI and 0/0 in Ratatui. Unchanged redraw allocates and retains
+101,873/39,892 bytes in ArborUI and 0/0 in Ratatui. Resize is
+302,653/123,428 versus 165,888/165,888 bytes, while reverse is
+2,520,281/2,444,860 versus 2,400,008/2,400,008 bytes. Variable-height results
+show the same shape. These are operation-local allocations; fixture allocations
+made before profiling are intentionally excluded.
+
+Opt-in ArborUI instrumentation now separates application view construction,
+staged reconciliation, layout, paint, diff, commit, post-commit refresh, and
+combined terminal validation/serialization/write. Existing untimed methods do
+not read the clock, and the transactional write-before-commit ordering is
+unchanged. In the 100-sample headless comparison, fixed Page Down averages 25.0
+microseconds in layout, 34.4 microseconds in paint, 4.4 microseconds in diff,
+and 76.0 microseconds for the complete timed render. Fixed unchanged redraw is
+22.6, 33.3, 2.1, and 69.7 microseconds respectively. Variable Page Down is
+36.8, 39.2, 5.5, and 92.8 microseconds. Reverse update remains dominant at
+689-807 microseconds before its 93-132 microsecond render. Ratatui does not
+expose equivalent internal boundaries, so only its complete-turn timings are
+compared.
 
 The widget unit tests independently verify checkbox activation and that a dialog
 owns focus, handles Escape, and replaces lower pointer targets.
@@ -236,6 +266,8 @@ cargo test -p arborui-widgets --all-features
 INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --all-features
 INSTA_UPDATE=no cargo test -p arborui-example-collection-lab --all-features
 cargo bench -p arborui-example-collection-lab --bench visible_ranges -- --noplot
+just comparison-memory-metrics
+just comparison-phase-metrics
 ```
 
 ## Finding
@@ -309,11 +341,12 @@ requirements open:
 
 - Select and table controls driven by application requirements
 - Form validation and broader loading or error recovery
-- Application-level measurements for code size, allocations, and retained memory
+- Application-level code-size measurement and broader memory workloads
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The next application evidence should separate allocations, retained memory, and
-phase costs before selecting optimization work. Select and table requirements
-can then extend the pilot without treating this local collection experiment as a
+The next performance work should use the measured layout and paint costs to
+select a narrow optimization experiment, then verify it against full-render and
+transactional correctness contracts. Select and table requirements can extend
+the pilot separately without treating this local collection experiment as a
 stabilized widget API.

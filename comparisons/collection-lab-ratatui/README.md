@@ -44,14 +44,15 @@ just comparison-check
 just comparison-bench-smoke
 just comparison-bench
 just comparison-output-metrics
+just comparison-memory-metrics
+just comparison-phase-metrics
 ```
 
 Ratatui is pinned to 0.30.2, matching the research report dated 2026-07-16. The
 comparison uses Rust 1.88.0 because that is Ratatui 0.30.2's MSRV; ArborUI's
-product workspace remains pinned to Rust 1.85.0. Allocator and production
-ANSI-byte adapters remain separate follow-up measurements because allocator
-instrumentation perturbs latency and logical test backends do not exercise
-production serialization.
+product workspace remains pinned to Rust 1.85.0. Allocator, phase, latency, and
+production ANSI probes remain separate because each instrumentation layer
+changes the work being measured.
 
 `comparison-output-metrics` passes real ArborUI patches and Ratatui buffer diffs
 through each framework's Crossterm backend under fixed 48x12 ANSI16 conditions.
@@ -120,3 +121,69 @@ ArborUI's runtime suppresses an empty prepared patch before backend output.
 Ratatui still invokes its production draw path for an empty diff, which emits
 reset commands and flushes. These figures measure deterministic serialization,
 not terminal-driver buffering or transport syscalls.
+
+## Allocation And Retained Memory
+
+`comparison-memory-metrics` runs every case in a separate release-mode process
+using DHAT 0.3.3. The profiler starts immediately before the named operation,
+then records total allocations, allocated bytes, peak live bytes, and bytes
+still retained while the result is alive. Dropping every measured result
+returned the tracked live block and byte counts to zero.
+
+The model and initial-render cases deliberately use different boundaries.
+`model` measures generated application data and providers. `initial-render`
+constructs that model before profiling, so its retained bytes represent the
+framework harness and first settled frame rather than the O(n) item model:
+
+| Items | Model retained | ArborUI fixed | ArborUI variable | Ratatui fixed | Ratatui variable |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| 1,000 | 148,987 | 97,484 | 92,988 | 82,944 | 82,944 |
+| 100,000 | 14,899,987 | 97,484 | 92,988 | 82,944 | 82,944 |
+| 1,000,000 | 148,999,987 | 97,484 | 92,988 | 82,944 | 82,944 |
+
+Application-model memory scales linearly as expected. First-frame framework
+memory is identical across all three logical collection sizes, which is the
+memory-side bounded-virtualization result.
+
+At 100,000 items, cells below are `allocated bytes/retained bytes` for each
+isolated operation. Cold includes model construction; the other action fixtures
+are constructed before profiling.
+
+| Scenario | ArborUI fixed | Ratatui fixed | ArborUI variable | Ratatui variable |
+| --- | ---: | ---: | ---: | ---: |
+| Cold | 26,196,910/14,997,471 | 25,982,881/14,982,931 | 26,170,015/14,992,975 | 25,982,881/14,982,931 |
+| Page Down | 122,177/44,884 | 0/0 | 106,354/42,772 | 0/0 |
+| Resize | 302,653/123,428 | 165,888/165,888 | 267,462/118,988 | 165,888/165,888 |
+| Reverse | 2,520,281/2,444,860 | 2,400,008/2,400,008 | 2,498,714/2,440,700 | 2,400,008/2,400,008 |
+| Unchanged redraw | 101,873/39,892 | 0/0 | 78,978/35,492 | 0/0 |
+
+## ArborUI Phase Attribution
+
+ArborUI exposes opt-in timings for view construction, staged reconciliation,
+layout, paint, diff, commit, post-commit refresh, and combined terminal backend
+validation/serialization/write. Untimed rendering does not read the clock. The
+headless comparison report averages 100 action samples and 20 initial-render
+samples; initial render excludes model construction. Selected columns are shown
+below in nanoseconds, while `comparison-phase-metrics` prints every phase.
+
+| Mode | Scenario | Update | Stage/reconcile | Layout | Paint | Diff | Render total |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Fixed | Initial render | 0 | 13,140 | 53,427 | 47,233 | 24,832 | 159,096 |
+| Fixed | Page Down | 418 | 3,834 | 25,047 | 34,439 | 4,365 | 75,990 |
+| Fixed | End | 638 | 3,809 | 24,080 | 34,668 | 5,407 | 78,242 |
+| Fixed | Resize | 2,319 | 3,830 | 26,879 | 41,185 | 15,141 | 98,014 |
+| Fixed | Selection | 409 | 3,739 | 24,904 | 34,258 | 4,272 | 75,719 |
+| Fixed | Reverse | 689,174 | 7,194 | 30,239 | 37,569 | 5,402 | 92,629 |
+| Fixed | Unchanged redraw | 414 | 3,612 | 22,557 | 33,279 | 2,100 | 69,743 |
+| Variable | Initial render | 0 | 12,062 | 54,826 | 55,012 | 13,338 | 157,143 |
+| Variable | Page Down | 441 | 2,922 | 36,796 | 39,219 | 5,461 | 92,809 |
+| Variable | End | 763 | 3,186 | 28,148 | 42,849 | 5,447 | 88,496 |
+| Variable | Resize | 1,959 | 3,847 | 32,739 | 51,679 | 15,890 | 115,668 |
+| Variable | Selection | 456 | 2,933 | 27,152 | 39,917 | 5,316 | 83,700 |
+| Variable | Reverse | 807,145 | 9,328 | 44,099 | 53,865 | 8,053 | 132,019 |
+| Variable | Unchanged redraw | 581 | 3,726 | 34,163 | 50,324 | 2,928 | 100,991 |
+
+Paint and layout are the largest steady render phases in this application.
+Reverse remains dominated by the application-owned O(n) update. Ratatui's
+internal phase boundaries are not exposed, so its comparison remains the
+complete-turn Criterion result rather than a fabricated phase split.

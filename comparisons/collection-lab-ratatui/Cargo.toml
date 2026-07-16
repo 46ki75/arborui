@@ -8,10 +8,11 @@ publish = false
 [dependencies]
 arborui = { path = "../../crates/arborui" }
 arborui-example-collection-lab = { path = "../../examples/collection-lab" }
+arborui-test = { path = "../../crates/arborui-test" }
+dhat = "=0.3.3"
 ratatui = { version = "=0.30.2", default-features = false, features = ["crossterm"] }
 
 [dev-dependencies]
-arborui-test = { path = "../../crates/arborui-test" }
 criterion = { version = "=0.7.0", default-features = false }
 
 [lints.rust]
