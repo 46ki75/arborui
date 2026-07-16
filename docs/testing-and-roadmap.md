@@ -403,20 +403,99 @@ Exit criterion: there are no known terminal-restoration failures, benchmark
 regressions are tracked, and crate versions can be published in dependency
 order.
 
-### Milestone 9: Optional Ergonomics
+### Milestone 9: Correctness Hardening
 
-Potential deliverables:
+Status: planned.
 
-- `arborui-macros`
-- Declarative view macro
-- Derive helpers
-- Scoped tasks
-- Split-footer screen mode
-- Dirty-region painting
-- Additional terminal backends
+Deliver:
 
-These features are accepted only after the manual API and correctness baseline
-are proven in real applications.
+- Cumulative layout rounding that prevents gaps and overlaps between adjacent
+  fractional boxes
+- Runtime recovery from a missed recomposition invalidation
+- Documented and enforced continuation-cell invariants for frame patches
+- Focused regression and property tests for each corrected invariant
+
+Exit criterion: fractional layouts render without seams, a structural model
+change cannot terminate the runtime solely because recomposition was not
+requested, and third-party backends can implement frame patches without relying
+on undocumented cell-run behavior.
+
+### Milestone 10: Runtime And Terminal Resilience
+
+Status: planned.
+
+Deliver:
+
+- Restore-first panic handling with documented unwind and abort behavior
+- Unix stop, continue, and termination-signal integration
+- Event-proxy wakeups that can interrupt blocked terminal polling
+- Compatibility tests for tmux and representative terminal emulators
+- Updated terminal lifecycle and compatibility documentation
+
+Exit criterion: terminal restoration and external-event latency are reliable
+across normal exit, errors, panics, suspension, and supported platforms.
+
+### Milestone 11: Production-Scale Application Proof
+
+Status: planned.
+
+Deliver:
+
+- A substantial facade-only application with multiple screens, overlays,
+  asynchronous work, large collections, and realistic state transitions
+- Application-driven improvements to the public API
+- Common application primitives such as checkbox, select, dialog or modal, and
+  table support where the pilot demonstrates a need
+- Layout additions justified by application requirements
+- Semantic and accessibility metadata for interactive elements
+- An end-to-end tutorial and deterministic application tests
+
+Exit criterion: a non-trivial application can depend only on `arborui` and test
+with `arborui-test` without extensive custom widget infrastructure or access to
+implementation crates.
+
+### Milestone 12: Performance Evidence And Incremental Work
+
+Status: planned.
+
+Deliver:
+
+- End-to-end benchmarks for large trees, tables, scrolling logs, overlays,
+  Unicode-heavy content, resize storms, and background updates
+- Measurements for latency, allocations, layout, painting, diffing,
+  serialization, emitted bytes, and peak memory
+- Reproducible baselines for the current implementation and comparable TUI
+  applications
+- Optimizations selected from measured bottlenecks, potentially including
+  buffer reuse, text-measurement caching, retained layout state, clean-subtree
+  skipping, and damaged-row scanning
+- Tracked benchmark reports or regression thresholds
+
+Exit criterion: performance claims are supported by reproducible
+application-level data, and incremental work introduces no rendering or
+transactional correctness regressions.
+
+### Milestone 13: Release And Ecosystem Maturity
+
+Status: planned.
+
+Deliver:
+
+- Dependency and security policy enforced through `cargo-deny` or equivalent
+  auditing
+- A documented decision on coverage reporting and CI enforcement
+- Public API and semver review for the first release
+- Final crates.io availability, package-content, and coordinated publishing
+  checks
+- Stable backend contracts before an additional backend is introduced
+- Compatibility, migration, support, and maturity policies
+
+Optional macros, derive helpers, scoped tasks, alternate screen modes, and
+additional backends remain application-driven follow-ups rather than release
+requirements.
+
+Exit criterion: users can evaluate adoption risk from documented guarantees,
+and the complete package family can be released reproducibly.
 
 ## Open Design Questions
 
