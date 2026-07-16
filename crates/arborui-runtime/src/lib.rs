@@ -12,8 +12,8 @@ pub use app::{Application, UpdateContext};
 pub use clock::{Clock, SystemClock};
 pub use command::Command;
 pub use event::translate_terminal_event;
-pub use proxy::{EventProxy, EventProxySendError};
+pub use proxy::{EventIngressMetrics, EventProxy, EventProxySendError, EventProxySendErrorKind};
 pub use runner::{
     AppRunner, DispatchReport, HeadlessRenderError, HeadlessRenderOutcome, ProcessReport,
-    RuntimeError, TerminalRenderOutcome, run,
+    RuntimeError, RuntimeOptions, TerminalRenderOutcome, run, run_with_options,
 };

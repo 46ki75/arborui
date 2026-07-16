@@ -144,8 +144,8 @@ The shortest path from research to a defensible product position is:
 The bounded application slices are recorded in the
 [`Facade-Only Application Proof`](../experiments/application-proof.md). It
 now establishes the modal form, second-screen state, external producer path,
-cooperative cancellation, stale-result rejection, and explicit settlement, but
-does not complete item 1 or establish bounded ingress.
+cooperative cancellation, stale-result rejection, explicit settlement, and
+bounded observable reject-new ingress, but does not complete item 1.
 
 ## Synthesis Index
 

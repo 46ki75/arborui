@@ -49,6 +49,14 @@ impl WakeSignal {
         }
         *notified = false;
     }
+
+    #[cfg(test)]
+    pub(crate) fn is_notified(&self) -> bool {
+        *self
+            .notified
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+    }
 }
 
 struct TaskWake {

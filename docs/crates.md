@@ -245,7 +245,7 @@ code and re-exports selected APIs.
 Example shape:
 
 ```rust
-pub use arborui_runtime::{AppRunner, Application, Command};
+pub use arborui_runtime::{AppRunner, Application, Command, RuntimeOptions};
 pub use arborui_ui::{Element, Key};
 pub use arborui_widgets as widgets;
 

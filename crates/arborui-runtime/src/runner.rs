@@ -1,9 +1,4 @@
-use std::{
-    collections::VecDeque,
-    fmt,
-    sync::{Arc, mpsc},
-    time::Duration,
-};
+use std::{collections::VecDeque, fmt, num::NonZeroUsize, sync::Arc, time::Duration};
 
 use arborui_core::Size;
 use arborui_render::Renderer;
@@ -15,13 +10,52 @@ use arborui_ui::{Invalidation, ReconcileError, UiCommitError, UiError, UiEvent, 
 use crate::{
     Application, Clock, Command, SystemClock, UpdateContext,
     command::CommandAction,
-    proxy::EventProxy,
+    proxy::{EventProxy, EventReceiver, event_channel},
     scheduler::{Scheduler, WakeSignal},
     translate_terminal_event,
 };
 
 const MAX_WORK_PER_TURN: usize = 1_024;
 const MAX_MESSAGES_PER_TURN: usize = 768;
+const DEFAULT_EVENT_INGRESS_CAPACITY: usize = 1_024;
+
+/// Configuration for application runtime construction.
+///
+/// External proxy ingress defaults to a capacity of 1,024 messages.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct RuntimeOptions {
+    event_ingress_capacity: NonZeroUsize,
+}
+
+impl RuntimeOptions {
+    /// Creates the default bounded runtime configuration.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Sets the maximum number of external proxy messages waiting for updates.
+    #[must_use]
+    pub const fn with_event_ingress_capacity(mut self, capacity: NonZeroUsize) -> Self {
+        self.event_ingress_capacity = capacity;
+        self
+    }
+
+    /// Returns the external proxy ingress capacity.
+    #[must_use]
+    pub const fn event_ingress_capacity(&self) -> NonZeroUsize {
+        self.event_ingress_capacity
+    }
+}
+
+impl Default for RuntimeOptions {
+    fn default() -> Self {
+        Self {
+            event_ingress_capacity: NonZeroUsize::new(DEFAULT_EVENT_INGRESS_CAPACITY)
+                .unwrap_or(NonZeroUsize::MIN),
+        }
+    }
+}
 
 /// Summary of messages and tasks processed in one drain operation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -151,7 +185,7 @@ pub struct AppRunner<A: Application> {
     application: A,
     messages: VecDeque<A::Message>,
     terminal_events: VecDeque<TerminalEvent>,
-    receiver: mpsc::Receiver<A::Message>,
+    receiver: EventReceiver<A::Message>,
     proxy: EventProxy<A::Message>,
     wake: Arc<WakeSignal>,
     scheduler: Scheduler<A::Message>,
@@ -160,17 +194,30 @@ pub struct AppRunner<A: Application> {
     viewport: Size,
     invalidation: Invalidation,
     quitting: bool,
+    prefer_external: bool,
 }
 
 impl<A: Application> AppRunner<A> {
     /// Creates a headless runner with an explicitly supplied renderer.
     #[must_use]
     pub fn new(application: A, viewport: Size, renderer: Renderer) -> Self {
-        Self::new_with_clock(
+        Self::new_with_options(application, viewport, renderer, RuntimeOptions::default())
+    }
+
+    /// Creates a headless runner with explicit runtime configuration.
+    #[must_use]
+    pub fn new_with_options(
+        application: A,
+        viewport: Size,
+        renderer: Renderer,
+        options: RuntimeOptions,
+    ) -> Self {
+        Self::new_with_clock_and_options(
             application,
             viewport,
             renderer,
             Arc::new(SystemClock::new()),
+            options,
         )
     }
 
@@ -182,9 +229,27 @@ impl<A: Application> AppRunner<A> {
         renderer: Renderer,
         clock: Arc<dyn Clock>,
     ) -> Self {
+        Self::new_with_clock_and_options(
+            application,
+            viewport,
+            renderer,
+            clock,
+            RuntimeOptions::default(),
+        )
+    }
+
+    /// Creates a headless runner with explicit clock and runtime configuration.
+    #[must_use]
+    pub fn new_with_clock_and_options(
+        application: A,
+        viewport: Size,
+        renderer: Renderer,
+        clock: Arc<dyn Clock>,
+        options: RuntimeOptions,
+    ) -> Self {
         let wake = Arc::new(WakeSignal::new());
-        let (sender, receiver) = mpsc::channel();
-        let proxy = EventProxy::new(sender, Arc::clone(&wake));
+        let (proxy, receiver) =
+            event_channel(options.event_ingress_capacity().get(), Arc::clone(&wake));
         let scheduler = Scheduler::new(Arc::clone(&wake), clock);
         Self {
             application,
@@ -199,6 +264,7 @@ impl<A: Application> AppRunner<A> {
             viewport,
             invalidation: Invalidation::Recompose,
             quitting: false,
+            prefer_external: false,
         }
     }
 
@@ -207,9 +273,23 @@ impl<A: Application> AppRunner<A> {
         application: A,
         session: &TerminalSession<B>,
     ) -> Result<Self, B::Error> {
+        Self::from_terminal_with_options(application, session, RuntimeOptions::default())
+    }
+
+    /// Creates a configured runner using a terminal session's rendering policy.
+    pub fn from_terminal_with_options<B: TerminalBackend>(
+        application: A,
+        session: &TerminalSession<B>,
+        options: RuntimeOptions,
+    ) -> Result<Self, B::Error> {
         let viewport = session.size()?;
         let renderer = Renderer::new(viewport, session.capabilities().width_policy);
-        Ok(Self::new(application, viewport, renderer))
+        Ok(Self::new_with_options(
+            application,
+            viewport,
+            renderer,
+            options,
+        ))
     }
 
     /// Returns a sender suitable for external threads and executors.
@@ -244,8 +324,8 @@ impl<A: Application> AppRunner<A> {
     /// Returns whether no messages, tasks, or visual work are pending.
     #[must_use]
     pub fn is_idle(&mut self) -> bool {
-        self.receive_external(MAX_WORK_PER_TURN);
         self.messages.is_empty()
+            && self.receiver.is_empty()
             && !self.scheduler.has_tasks()
             && self.invalidation == Invalidation::None
     }
@@ -256,8 +336,8 @@ impl<A: Application> AppRunner<A> {
     /// timers with future deadlines as visually idle.
     #[must_use]
     pub fn is_visually_idle(&mut self) -> bool {
-        self.receive_external(MAX_WORK_PER_TURN);
         self.messages.is_empty()
+            && self.receiver.is_empty()
             && !self.scheduler.has_ready_work()
             && self.invalidation == Invalidation::None
     }
@@ -297,10 +377,10 @@ impl<A: Application> AppRunner<A> {
         let mut completed_tasks = 0;
         let mut work = 0;
         loop {
-            let mut progressed = self.receive_external(MAX_WORK_PER_TURN.saturating_sub(work));
+            let mut progressed = false;
 
             while !self.quitting && work < MAX_WORK_PER_TURN && updates < MAX_MESSAGES_PER_TURN {
-                let Some(message) = self.messages.pop_front() else {
+                let Some(message) = self.next_message() else {
                     break;
                 };
                 progressed = true;
@@ -526,13 +606,24 @@ impl<A: Application> AppRunner<A> {
         Ok(())
     }
 
-    fn receive_external(&mut self, limit: usize) -> bool {
-        let received = (0..limit)
-            .map_while(|_| self.receiver.try_recv().ok())
-            .collect::<Vec<_>>();
-        let progressed = !received.is_empty();
-        self.messages.extend(received);
-        progressed
+    fn next_message(&mut self) -> Option<A::Message> {
+        if self.prefer_external {
+            if let Some(message) = self.receiver.receive() {
+                self.prefer_external = false;
+                return Some(message);
+            }
+            let message = self.messages.pop_front()?;
+            self.prefer_external = true;
+            return Some(message);
+        }
+
+        if let Some(message) = self.messages.pop_front() {
+            self.prefer_external = true;
+            return Some(message);
+        }
+        let message = self.receiver.receive()?;
+        self.prefer_external = false;
+        Some(message)
     }
 
     fn execute(&mut self, command: Command<A::Message>) {
@@ -545,6 +636,7 @@ impl<A: Application> AppRunner<A> {
                 }
                 CommandAction::Quit => {
                     self.quitting = true;
+                    self.receiver.close();
                     break;
                 }
             }
@@ -594,9 +686,30 @@ where
     A: Application,
     B: TerminalBackend,
 {
+    run_with_options(
+        application,
+        backend,
+        desired,
+        poll_interval,
+        RuntimeOptions::default(),
+    )
+}
+
+/// Configured variant of [`run`].
+pub fn run_with_options<A, B>(
+    application: A,
+    backend: B,
+    desired: TerminalState,
+    poll_interval: Duration,
+    options: RuntimeOptions,
+) -> Result<A, RuntimeError<B::Error>>
+where
+    A: Application,
+    B: TerminalBackend,
+{
     let mut session = TerminalSession::open(backend, desired).map_err(RuntimeError::Backend)?;
-    let mut runner =
-        AppRunner::from_terminal(application, &session).map_err(RuntimeError::Backend)?;
+    let mut runner = AppRunner::from_terminal_with_options(application, &session, options)
+        .map_err(RuntimeError::Backend)?;
     let result = runner.run_terminal(&mut session, poll_interval);
     match result {
         Ok(()) => session.restore().map_err(RuntimeError::Backend)?,
@@ -1052,6 +1165,80 @@ mod tests {
         assert!(sent);
         assert_eq!(runner.process_pending().updates, 1);
         assert_eq!(runner.application().values, [7]);
+        Ok(())
+    }
+
+    #[test]
+    fn bounded_external_ingress_rejects_new_and_accepts_after_processing()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (terminal, _state) = session([])?;
+        let options = RuntimeOptions::new()
+            .with_event_ingress_capacity(NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN));
+        let mut runner =
+            AppRunner::from_terminal_with_options(OrderedApp::default(), &terminal, options)?;
+        let proxy = runner.event_proxy();
+
+        assert!(proxy.send(OrderedMessage::Value(1)).is_ok());
+        assert!(proxy.send(OrderedMessage::Value(2)).is_ok());
+        let rejected = proxy
+            .send(OrderedMessage::Value(3))
+            .expect_err("capacity should reject the new message");
+        assert_eq!(rejected.kind(), crate::EventProxySendErrorKind::Full);
+        assert_eq!(proxy.metrics().depth, 2);
+        assert_eq!(proxy.metrics().high_water_mark, 2);
+        assert_eq!(proxy.metrics().rejected, 1);
+
+        assert_eq!(runner.process_pending().updates, 2);
+        assert_eq!(runner.application().values, [1, 2]);
+        assert_eq!(proxy.metrics().depth, 0);
+        assert!(proxy.send(rejected.into_inner()).is_ok());
+        assert_eq!(runner.process_pending().updates, 1);
+        assert_eq!(runner.application().values, [1, 2, 3]);
+        Ok(())
+    }
+
+    #[test]
+    fn ready_internal_and_external_sources_alternate_without_reordering()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (terminal, _state) = session([])?;
+        let mut runner = AppRunner::from_terminal(OrderedApp::default(), &terminal)?;
+        let proxy = runner.event_proxy();
+        runner.enqueue(OrderedMessage::Value(10));
+        runner.enqueue(OrderedMessage::Value(11));
+        assert!(proxy.send(OrderedMessage::Value(1)).is_ok());
+        assert!(proxy.send(OrderedMessage::Value(2)).is_ok());
+
+        assert_eq!(runner.process_pending().updates, 4);
+
+        assert_eq!(runner.application().values, [10, 1, 11, 2]);
+        Ok(())
+    }
+
+    #[test]
+    fn dropping_or_quitting_runner_closes_external_ingress()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (terminal, _state) = session([])?;
+        let runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+        let dropped_proxy = runner.event_proxy();
+        drop(runner);
+        let dropped = dropped_proxy
+            .send(ViewMessage::Increment)
+            .expect_err("dropped runner should close ingress");
+        assert_eq!(dropped.kind(), crate::EventProxySendErrorKind::Closed);
+
+        let mut runner = AppRunner::from_terminal(ViewApp::default(), &terminal)?;
+        let quitting_proxy = runner.event_proxy();
+        assert!(quitting_proxy.send(ViewMessage::Quit).is_ok());
+        assert!(quitting_proxy.send(ViewMessage::Increment).is_ok());
+        let report = runner.process_pending();
+        assert!(report.quitting);
+        assert_eq!(runner.application().value, 0);
+        let quitting = quitting_proxy
+            .send(ViewMessage::Increment)
+            .expect_err("quitting runner should close ingress");
+        assert_eq!(quitting.kind(), crate::EventProxySendErrorKind::Closed);
+        assert!(quitting_proxy.metrics().closed);
+        assert_eq!(quitting_proxy.metrics().depth, 0);
         Ok(())
     }
 

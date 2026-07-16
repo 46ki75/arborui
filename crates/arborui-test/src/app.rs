@@ -3,8 +3,8 @@ use std::{error::Error, fmt, sync::Arc, time::Duration};
 use arborui_core::{Point, Size};
 use arborui_render::{FramePatch, Renderer};
 use arborui_runtime::{
-    AppRunner, Application, DispatchReport, EventProxy, RuntimeError, TerminalRenderOutcome,
-    translate_terminal_event,
+    AppRunner, Application, DispatchReport, EventProxy, RuntimeError, RuntimeOptions,
+    TerminalRenderOutcome, translate_terminal_event,
 };
 use arborui_terminal::{
     Capabilities, KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton,
@@ -171,6 +171,16 @@ impl<A: Application> TestApp<A> {
         fail_test(Self::try_new(application, size))
     }
 
+    /// Creates and initially renders an application with runtime configuration.
+    ///
+    /// Panics with a test diagnostic if initial rendering fails. Use
+    /// [`try_with_runtime_options`](Self::try_with_runtime_options) to inspect
+    /// initialization errors.
+    #[must_use]
+    pub fn with_runtime_options(application: A, size: Size, options: RuntimeOptions) -> Self {
+        fail_test(Self::try_with_runtime_options(application, size, options))
+    }
+
     /// Creates and initially renders an application with an explicit width policy.
     ///
     /// Panics with a test diagnostic if initial rendering fails. Use
@@ -180,9 +190,43 @@ impl<A: Application> TestApp<A> {
         fail_test(Self::try_with_width_policy(application, size, width_policy))
     }
 
+    /// Creates an application with explicit width and runtime configuration.
+    ///
+    /// Panics with a test diagnostic if initial rendering fails. Use
+    /// [`try_with_width_policy_and_runtime_options`](Self::try_with_width_policy_and_runtime_options)
+    /// to inspect initialization errors.
+    #[must_use]
+    pub fn with_width_policy_and_runtime_options(
+        application: A,
+        size: Size,
+        width_policy: WidthPolicy,
+        options: RuntimeOptions,
+    ) -> Self {
+        fail_test(Self::try_with_width_policy_and_runtime_options(
+            application,
+            size,
+            width_policy,
+            options,
+        ))
+    }
+
     /// Fallible variant of [`new`](Self::new).
     pub fn try_new(application: A, size: Size) -> Result<Self, TestError> {
         Self::try_with_width_policy(application, size, WidthPolicy::Unicode)
+    }
+
+    /// Fallible variant of [`with_runtime_options`](Self::with_runtime_options).
+    pub fn try_with_runtime_options(
+        application: A,
+        size: Size,
+        options: RuntimeOptions,
+    ) -> Result<Self, TestError> {
+        Self::try_with_width_policy_and_runtime_options(
+            application,
+            size,
+            WidthPolicy::Unicode,
+            options,
+        )
     }
 
     /// Fallible variant of [`with_width_policy`](Self::with_width_policy).
@@ -191,13 +235,29 @@ impl<A: Application> TestApp<A> {
         size: Size,
         width_policy: WidthPolicy,
     ) -> Result<Self, TestError> {
+        Self::try_with_width_policy_and_runtime_options(
+            application,
+            size,
+            width_policy,
+            RuntimeOptions::default(),
+        )
+    }
+
+    /// Creates an application with explicit width and runtime configuration.
+    pub fn try_with_width_policy_and_runtime_options(
+        application: A,
+        size: Size,
+        width_policy: WidthPolicy,
+        options: RuntimeOptions,
+    ) -> Result<Self, TestError> {
         let clock = ManualClock::default();
         let clock_source: Arc<dyn arborui_runtime::Clock> = Arc::new(clock.clone());
-        let runner = AppRunner::new_with_clock(
+        let runner = AppRunner::new_with_clock_and_options(
             application,
             size,
             Renderer::new(size, width_policy),
             clock_source,
+            options,
         );
         let capabilities = Capabilities {
             width_policy,
@@ -247,7 +307,10 @@ impl<A: Application> TestApp<A> {
         self.clock.elapsed()
     }
 
-    /// Enqueues one application message and settles immediate work.
+    /// Enqueues one application message directly and settles immediate work.
+    ///
+    /// This deterministic injection bypasses bounded external proxy ingress.
+    /// Use [`event_proxy`](Self::event_proxy) to test external admission.
     pub fn send(&mut self, message: A::Message) -> SettleReport {
         fail_test(self.try_send(message))
     }

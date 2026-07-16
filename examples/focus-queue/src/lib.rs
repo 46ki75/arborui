@@ -9,11 +9,12 @@ use std::{
     time::Duration,
 };
 
-use arborui::{EventProxy, Modifier, prelude::*};
+use arborui::{EventProxy, EventProxySendErrorKind, Modifier, prelude::*};
 
 const DEFAULT_FOCUS_SECONDS: u32 = 25 * 60;
 const TICK_INTERVAL: Duration = Duration::from_secs(1);
 const ACTIVITY_ITEM_INTERVAL: Duration = Duration::from_millis(250);
+const ACTIVITY_RETRY_INTERVAL: Duration = Duration::from_millis(25);
 const MAX_ACTIVITY_ITEMS: usize = 32;
 
 /// Messages accepted by [`FocusQueue`].
@@ -148,22 +149,61 @@ fn launch_demo_activity(
                 if cancellation.is_cancelled() {
                     return;
                 }
-                if proxy
-                    .send(Message::ActivityItem {
+                if !send_activity_message(
+                    &proxy,
+                    &cancellation,
+                    Message::ActivityItem {
                         generation,
                         text: text.to_owned(),
-                    })
-                    .is_err()
-                {
+                    },
+                ) {
                     return;
                 }
             }
             if !cancellation.is_cancelled() {
-                let _rejected = proxy.send(Message::ActivityFinished { generation });
+                send_activity_message(
+                    &proxy,
+                    &cancellation,
+                    Message::ActivityFinished { generation },
+                );
             }
         })
         .map(|_worker| ())
         .map_err(|error| format!("could not start activity worker: {error}"))
+}
+
+fn send_activity_message(
+    proxy: &EventProxy<Message>,
+    cancellation: &ActivityCancellation,
+    message: Message,
+) -> bool {
+    send_activity_message_with_retry(proxy, cancellation, message, || {
+        thread::sleep(ACTIVITY_RETRY_INTERVAL);
+    })
+}
+
+fn send_activity_message_with_retry<Wait>(
+    proxy: &EventProxy<Message>,
+    cancellation: &ActivityCancellation,
+    mut message: Message,
+    mut wait: Wait,
+) -> bool
+where
+    Wait: FnMut(),
+{
+    loop {
+        match proxy.send(message) {
+            Ok(()) => return true,
+            Err(error) if error.kind() == EventProxySendErrorKind::Full => {
+                message = error.into_inner();
+                wait();
+                if cancellation.is_cancelled() {
+                    return false;
+                }
+            }
+            Err(_closed) => return false,
+        }
+    }
 }
 
 struct Task {
@@ -1029,5 +1069,87 @@ impl Application for FocusQueue {
             .key("edit-dialog");
 
         stack([application, edit_dialog]).layout(overlay_layout)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        num::NonZeroUsize,
+        sync::{Arc, Barrier},
+    };
+
+    use arborui::{AppRunner, Renderer, RuntimeOptions, Size, WidthPolicy};
+
+    use super::*;
+
+    fn runner_with_capacity(capacity: usize) -> AppRunner<FocusQueue> {
+        let size = Size::new(20, 8);
+        let options = RuntimeOptions::new()
+            .with_event_ingress_capacity(NonZeroUsize::new(capacity).unwrap_or(NonZeroUsize::MIN));
+        AppRunner::new_with_options(
+            FocusQueue::with_activity_launcher(60, |_generation, _cancellation, _proxy| Ok(())),
+            size,
+            Renderer::new(size, WidthPolicy::Unicode),
+            options,
+        )
+    }
+
+    #[test]
+    fn activity_sender_retries_recovered_message_after_capacity_frees() {
+        let mut runner = runner_with_capacity(1);
+        let proxy = runner.event_proxy();
+        assert!(proxy.send(Message::ShowActivity).is_ok());
+        let cancellation = ActivityCancellation::new();
+        let retrying = Arc::new(Barrier::new(2));
+        let retry_allowed = Arc::new(Barrier::new(2));
+        let worker_retrying = Arc::clone(&retrying);
+        let worker_retry_allowed = Arc::clone(&retry_allowed);
+        let worker_proxy = proxy.clone();
+        let worker_cancellation = cancellation.clone();
+        let worker = thread::spawn(move || {
+            send_activity_message_with_retry(
+                &worker_proxy,
+                &worker_cancellation,
+                Message::ShowQueue,
+                || {
+                    worker_retrying.wait();
+                    worker_retry_allowed.wait();
+                },
+            )
+        });
+
+        retrying.wait();
+        assert_eq!(proxy.metrics().rejected, 1);
+        assert_eq!(runner.process_pending().updates, 1);
+        retry_allowed.wait();
+        assert!(worker.join().is_ok_and(|sent| sent));
+        assert_eq!(runner.process_pending().updates, 1);
+        assert!(!runner.application().showing_activity());
+    }
+
+    #[test]
+    fn activity_sender_stops_retrying_after_cancellation_or_close() {
+        let runner = runner_with_capacity(1);
+        let proxy = runner.event_proxy();
+        assert!(proxy.send(Message::ShowActivity).is_ok());
+        let cancellation = ActivityCancellation::new();
+        cancellation.cancel();
+
+        assert!(!send_activity_message_with_retry(
+            &proxy,
+            &cancellation,
+            Message::ShowQueue,
+            || {},
+        ));
+
+        drop(runner);
+        let open_cancellation = ActivityCancellation::new();
+        assert!(!send_activity_message_with_retry(
+            &proxy,
+            &open_cancellation,
+            Message::ShowQueue,
+            || panic!("closed ingress must not retry"),
+        ));
     }
 }

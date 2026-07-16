@@ -448,12 +448,12 @@ capability transitions cannot leave terminal and backend state in disagreement.
 
 ### Milestone 11: Production-Scale Application Proof
 
-Status: planned. Focus Queue now contains two application-driven slices: a
+Status: planned. Focus Queue now contains three application-driven slices: a
 controlled modal edit form and a second screen with externally produced updates,
 cooperative cancellation, stale-result rejection, explicit settlement,
-recoverable errors, and deterministic facade-only tests. Bounded ingress,
-virtualization, table/select controls, and the complete production-scale proof
-remain planned.
+recoverable errors, and bounded observable reject-new ingress with deterministic
+facade-only pressure tests. Virtualization, table/select controls, and the
+complete production-scale proof remain planned.
 
 Deliver:
 

@@ -1,4 +1,4 @@
-use std::time::Duration;
+use std::{num::NonZeroUsize, time::Duration};
 
 use arborui_core::Size;
 use arborui_runtime::{Application, Command, UpdateContext};
@@ -166,6 +166,28 @@ fn events_render_and_expose_focus_and_patches() {
     assert_eq!(app.application().count, 1);
     assert_eq!(app.frame().characters(), "1   \nadd ");
     assert!(app.hit_at(Point::new(0, 1)).is_some());
+}
+
+#[test]
+fn configured_test_app_exercises_bounded_external_ingress() {
+    let options = RuntimeOptions::new()
+        .with_event_ingress_capacity(NonZeroUsize::new(1).unwrap_or(NonZeroUsize::MIN));
+    let mut app = TestApp::with_runtime_options(Counter::default(), Size::new(4, 2), options);
+    let proxy = app.event_proxy();
+
+    assert!(proxy.send(Message::Increment).is_ok());
+    let rejected = proxy
+        .send(Message::Increment)
+        .expect_err("second external message should exceed capacity");
+    assert_eq!(rejected.kind(), EventProxySendErrorKind::Full);
+    assert_eq!(proxy.metrics().depth, 1);
+    assert_eq!(proxy.metrics().rejected, 1);
+
+    app.settle();
+    assert_eq!(app.application().count, 1);
+    assert!(proxy.send(rejected.into_inner()).is_ok());
+    app.settle();
+    assert_eq!(app.application().count, 2);
 }
 
 #[test]

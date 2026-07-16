@@ -14,7 +14,10 @@ pub use frame::{TestCell, TestCellContent, TestFrame};
 
 pub use arborui_core::{CursorState, Point, Size, Style};
 pub use arborui_render::{FramePatch, HyperlinkId};
-pub use arborui_runtime::{DispatchReport, EventProxy};
+pub use arborui_runtime::{
+    DispatchReport, EventIngressMetrics, EventProxy, EventProxySendError, EventProxySendErrorKind,
+    RuntimeOptions,
+};
 pub use arborui_terminal::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,
     MouseEventKind, TerminalEvent,

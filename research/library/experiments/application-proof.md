@@ -13,9 +13,12 @@ Can the same application add a second screen with externally produced updates,
 cooperative cancellation, stale-result rejection, explicit settlement, and
 recoverable errors through the public runtime and test facades?
 
-These are the first two bounded slices of the production-scale application
-proof. They do not attempt to prove bounded ingress, virtualization, or
-comparative ergonomics.
+Can external proxy ingress reject new work at a configured bound, expose
+pressure, return ownership of rejected messages, and recover after draining
+without moving producer backlog into an unbounded internal queue?
+
+These are the first three bounded slices of the production-scale application
+proof. They do not attempt to prove virtualization or comparative ergonomics.
 
 ## Implementation
 
@@ -54,8 +57,21 @@ whose generation is no longer current.
 The activity state machine distinguishes idle, running, cancelled, completed,
 and failed states. Failures expose a Retry action. The application retains at
 most 32 accepted log items with stable keys and renders the newest first. This
-bound limits application memory after update processing; it does not bound the
-runtime's ingress queue or provide producer backpressure.
+model bound remains distinct from runtime ingress capacity.
+
+The third slice replaces unbounded proxy transport with a dedicated bounded
+queue. `RuntimeOptions` selects a positive capacity and defaults to 1,024.
+`EventProxy::send` rejects the new message with `Full` when occupied or `Closed`
+after shutdown, retaining the unsent message in both cases. Shared metrics expose
+depth, high-water mark, full rejections, capacity, and closure. The runner
+consumes external messages directly instead of bulk-moving them into its
+internal message deque, and alternates external and internal sources when both
+are ready.
+
+Focus Queue configures capacity eight. Its demonstration worker retries the same
+recovered item or terminal result after `Full`, while cancellation remains able
+to stop retries; `Closed` ends the producer. This is one explicit application
+policy, not automatic throttling supplied by the runtime.
 
 ## Deterministic Evidence
 
@@ -83,6 +99,14 @@ The public application harness verifies:
   retained range.
 - Character snapshots cover idle and completed Activity states, including the
   maximum retained-history viewport.
+- Capacity-two facade tests accept exactly two items, reject the third without
+  changing the queue, inspect shared pressure metrics, drain accepted items,
+  retry the recovered item, and settle completion.
+- Runtime tests verify ownership recovery, clone-shared capacity, FIFO delivery,
+  capacity release, high-water and rejection metrics, wake behavior, and closure
+  after quit or runner destruction.
+- Producer-policy tests verify retry of the recovered message after capacity
+  drains and termination after cooperative cancellation or closed ingress.
 
 The widget unit tests independently verify checkbox activation and that a dialog
 owns focus, handles Escape, and replaces lower pointer targets.
@@ -90,8 +114,10 @@ owns focus, handles Escape, and replaces lower pointer targets.
 Run the focused evidence with:
 
 ```console
+cargo test -p arborui-runtime --all-features
+cargo test -p arborui-test --all-features
 cargo test -p arborui-widgets --all-features
-INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --test focus_queue --all-features
+INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --all-features
 ```
 
 ## Finding
@@ -125,12 +151,25 @@ persistent navigation under a long log. Giving the screen a zero flex basis and
 allowing it to grow within the root keeps the footer visible while the inner
 scroll view clips the retained log.
 
+The bounded-ingress slice found that replacing the channel alone would be
+insufficient. Bulk transfer into the runner's internal message deque would free
+producer slots before updates consumed those messages, allowing a sustained
+producer to relocate an unbounded backlog behind the advertised capacity.
+Keeping ingress as a separate queue until each message is selected preserves the
+configured waiting bound. Fair alternation prevents an always-ready internal or
+external source from monopolizing serialized updates.
+
+Reject-new is the first policy because it preserves accepted FIFO entries and
+requires no framework guess about message equivalence. It is observable overload
+signalling, not lossless delivery, producer fairness, or automatic rate control.
+Coalescing and replace-latest remain future opt-in policies for message classes
+where intermediate values are demonstrably obsolete.
+
 ## Limits And Next Evidence
 
 This slice does not complete the production-scale proof. It leaves these
 requirements open:
 
-- Bounded ingress and observable backpressure
 - Fixed and variable-height visible-range collections
 - Select and table controls driven by application requirements
 - Form validation and broader loading or error recovery
@@ -140,7 +179,7 @@ requirements open:
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The next application slice should prototype bounded, observable ingress and
-choose an explicit reject, coalesce, or replace-latest policy. Virtualization
-should remain a separate measured prototype rather than being inferred from the
-current scroll views.
+The next application evidence should be a separately measured fixed and
+variable-height visible-range collection prototype. It must define construction,
+stable identity, overscan, measurement, focus, and selection semantics rather
+than inferring virtualization from the current scroll views.

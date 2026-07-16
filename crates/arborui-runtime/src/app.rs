@@ -46,7 +46,9 @@ impl<Message> UpdateContext<Message> {
         self.invalidation.request(invalidation);
     }
 
-    /// Returns a cloneable sender for work that outlives this update.
+    /// Returns a cloneable bounded sender for work that outlives this update.
+    ///
+    /// Sending is fallible when ingress is full or the runner has closed.
     #[must_use]
     pub fn event_proxy(&self) -> EventProxy<Message> {
         self.proxy.clone()

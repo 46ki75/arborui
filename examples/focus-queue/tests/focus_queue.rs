@@ -1,6 +1,7 @@
 //! Downstream pilot tests using only the public application and test facades.
 
 use std::{
+    num::NonZeroUsize,
     sync::{Arc, Barrier, Mutex, MutexGuard},
     thread,
     time::Duration,
@@ -9,8 +10,8 @@ use std::{
 use arborui::{CursorShape, CursorVisibility, EventProxy, Modifier, Point, TextBuffer};
 use arborui_example_focus_queue::{ActivityCancellation, ActivityStatus, FocusQueue, Message};
 use arborui_test::{
-    Key, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind, Size, TestApp,
-    TestCellContent, TestFrame,
+    EventProxySendErrorKind, Key, KeyCode, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind,
+    RuntimeOptions, Size, TestApp, TestCellContent, TestFrame,
 };
 
 fn focused_label(frame: &TestFrame) -> String {
@@ -508,6 +509,55 @@ fn external_activity_settles_and_bounds_retained_history() {
         Some("Remote update 34")
     );
     insta::assert_snapshot!("focus_queue_activity_complete", app.frame());
+}
+
+#[test]
+fn bounded_activity_ingress_rejects_recovers_and_retries_new_item() {
+    let activity_source = ControlledActivity::default();
+    let options = RuntimeOptions::new()
+        .with_event_ingress_capacity(NonZeroUsize::new(2).unwrap_or(NonZeroUsize::MIN));
+    let mut app =
+        TestApp::with_runtime_options(activity_source.queue(), Size::new(72, 18), options);
+    app.send(Message::StartActivity);
+    let (generation, cancellation, proxy) = activity_source.launch(0);
+
+    for text in ["accepted one", "accepted two"] {
+        assert!(
+            proxy
+                .send(Message::ActivityItem {
+                    generation,
+                    text: text.to_owned(),
+                })
+                .is_ok()
+        );
+    }
+    let rejected = proxy
+        .send(Message::ActivityItem {
+            generation,
+            text: "recovered three".to_owned(),
+        })
+        .expect_err("third item should exceed configured ingress capacity");
+    assert_eq!(rejected.kind(), EventProxySendErrorKind::Full);
+    assert_eq!(proxy.metrics().capacity, 2);
+    assert_eq!(proxy.metrics().depth, 2);
+    assert_eq!(proxy.metrics().high_water_mark, 2);
+    assert_eq!(proxy.metrics().rejected, 1);
+
+    app.settle();
+    assert_eq!(app.application().activity_item_count(), 2);
+    let recovered = rejected.into_inner();
+    assert!(proxy.send(recovered).is_ok());
+    assert!(proxy.send(Message::ActivityFinished { generation }).is_ok());
+    app.settle();
+
+    assert!(cancellation.is_cancelled());
+    assert_eq!(
+        app.application().activity_status(),
+        ActivityStatus::Completed
+    );
+    assert_eq!(app.application().activity_item_count(), 3);
+    assert_eq!(app.application().activity_item(2), Some("recovered three"));
+    assert_eq!(proxy.metrics().depth, 0);
 }
 
 #[test]

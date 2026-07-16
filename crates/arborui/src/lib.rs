@@ -35,9 +35,10 @@ pub use arborui_render::{
     Buffer, Canvas, CommitError, FramePatch, HitId, HitMap, PreparedFrame, Renderer,
 };
 pub use arborui_runtime::{
-    AppRunner, Application, Clock, Command, DispatchReport, EventProxy, EventProxySendError,
-    HeadlessRenderError, HeadlessRenderOutcome, ProcessReport, RuntimeError, SystemClock,
-    TerminalRenderOutcome, UpdateContext, run, translate_terminal_event,
+    AppRunner, Application, Clock, Command, DispatchReport, EventIngressMetrics, EventProxy,
+    EventProxySendError, EventProxySendErrorKind, HeadlessRenderError, HeadlessRenderOutcome,
+    ProcessReport, RuntimeError, RuntimeOptions, SystemClock, TerminalRenderOutcome, UpdateContext,
+    run, run_with_options, translate_terminal_event,
 };
 pub use arborui_terminal::{
     AutowrapMode, Capabilities, KeyboardMode, MouseMode, ScreenMode, TerminalBackend,

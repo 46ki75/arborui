@@ -278,11 +278,32 @@ The runtime also provides a thread-safe proxy:
 
 ```rust
 let proxy: EventProxy<Message> = runner.event_proxy();
-proxy.send(Message::Loaded(data))?;
+if let Err(error) = proxy.send(Message::Loaded(data)) {
+    match error.kind() {
+        EventProxySendErrorKind::Full => retry_or_drop(error.into_inner()),
+        EventProxySendErrorKind::Closed => stop_producer(error.into_inner()),
+    }
+}
 ```
 
 This is the primary integration point for Tokio, async-std, smol, worker
 threads, subprocess readers, and external callbacks.
+
+External ingress uses a positive, bounded capacity. The default is 1,024
+messages; `RuntimeOptions::with_event_ingress_capacity` configures another
+capacity for `AppRunner::new_with_options`, `run_with_options`, and
+`TestApp::with_runtime_options`. `EventProxy::send` does not wait for capacity:
+it accepts the new message exactly once or returns an error retaining ownership
+of that message. `Full` leaves the accepted FIFO unchanged and does not wake the
+runner. `Closed` means orderly shutdown or runner destruction has ended ingress.
+A successful send proves admission, not that the application update has run;
+work admitted immediately before concurrent shutdown may be discarded.
+
+`EventProxy::metrics` snapshots configured capacity, current depth, high-water
+mark, full-rejection count, and closure. Clones share one queue and its metrics.
+Accepted messages from one producer remain FIFO; interleaving between concurrent
+producers is unspecified. A rejected message has no queue position, so retrying
+it may place it after messages accepted in the meantime.
 
 The initial implementation uses explicit invalidation through `UpdateContext`.
 An update that mutates visible model state requests `Paint`, `Layout`, or
@@ -322,9 +343,15 @@ a stale UI handle.
 Until scoped cancellation exists, an application integrating a long-running
 producer owns its cancellation signal. Messages from replaceable work should
 carry an application generation or request ID so an item or completion racing
-with cancellation can be rejected during serialized update. `EventProxy` ingress
-is currently unbounded; limiting retained model history after receipt is not
-backpressure and must not be described as such.
+with cancellation can be rejected during serialized update. Focus Queue's
+producer recovers and retries `Full` messages while it remains current, and stops
+on cancellation or `Closed`.
+
+The ingress bound applies only to messages waiting in `EventProxy`. Direct
+`AppRunner::enqueue`, UI handler output, immediate commands, timers, and future
+completion use internal serialized queues. Bounded proxy ingress is therefore an
+observable overload boundary, not a claim that every source of application work
+or all application memory is bounded.
 
 ## Scheduler
 
@@ -362,10 +389,12 @@ dormant futures and future timer deadlines while still reporting queued
 messages, ready tasks, and visual invalidation.
 
 Each scheduler turn has a finite work budget. Arrived application messages are
-processed before another bounded group of future polls, and terminal input is
-checked between saturated turns. Since terminal polling is a synchronous
-backend contract, proxy messages arriving during a poll are observed no later
-than the caller-configured poll interval.
+processed before another bounded group of future polls. Internal and external
+message sources alternate when both remain ready so neither can monopolize the
+update budget; each source retains its own FIFO order. Terminal input is checked
+between saturated turns. Since terminal polling is a synchronous backend
+contract, proxy messages arriving during a poll are observed no later than the
+caller-configured poll interval.
 
 ## Standard Widgets
 
@@ -404,6 +433,9 @@ contracts rather than terminal-backend types.
 tree, renderer, and transactional write path as a real application. `TestApp`
 supports key, mouse, paste, resize, direct UI event, and external-proxy input;
 manual time advancement; and settling until no immediate visual work remains.
+Runtime options can set a small ingress capacity for deterministic saturation
+tests. `TestApp::send` is direct model-message injection and intentionally
+bypasses proxy admission; tests of external pressure use `event_proxy`.
 
 The committed `TestFrame` exposes resolved graphemes, styles, hyperlinks, and
 cursor state. Its `Display` representation is a character snapshot, while its
