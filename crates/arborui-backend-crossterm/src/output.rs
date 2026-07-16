@@ -18,6 +18,9 @@ pub(crate) fn write_patch<W: Write>(
     patch: &FramePatch,
     capabilities: &Capabilities,
 ) -> io::Result<()> {
+    patch
+        .validate_for_width_policy(capabilities.width_policy)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
     if patch.is_empty() {
         return Ok(());
     }
@@ -292,7 +295,7 @@ fn invalid_coordinate(value: i32) -> io::Error {
 
 #[cfg(test)]
 mod tests {
-    use std::io;
+    use std::{io, sync::Arc};
 
     use arborui_core::{Point, Size};
     use arborui_render::Renderer;
@@ -360,6 +363,129 @@ mod tests {
         write_patch(&mut output, second.patch(), &Capabilities::default())?;
 
         assert!(output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn wide_grapheme_is_emitted_once_at_the_leading_cell() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut renderer = Renderer::new(Size::new(3, 1), WidthPolicy::Unicode);
+        let initial = renderer.prepare(Size::new(3, 1), CursorState::HIDDEN, |_| Ok(()))?;
+        assert_eq!(renderer.commit(initial), Ok(()));
+        let frame = renderer.prepare(Size::new(3, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_text(Point::new(1, 0), "界", Style::default(), None)?;
+            Ok(())
+        })?;
+        let mut output = Vec::new();
+
+        write_patch(&mut output, frame.patch(), &Capabilities::default())?;
+
+        let leading_move: &[u8] = b"\x1b[1;2H";
+        let continuation_move: &[u8] = b"\x1b[1;3H";
+        assert!(
+            output
+                .windows(leading_move.len())
+                .any(|window| window == leading_move)
+        );
+        assert!(
+            !output
+                .windows(continuation_move.len())
+                .any(|window| window == continuation_move)
+        );
+        assert_eq!(
+            output
+                .windows("界".len())
+                .filter(|window| *window == "界".as_bytes())
+                .count(),
+            1
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_continuation_is_rejected_before_output() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+        let frame = renderer.prepare(Size::new(2, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_text(Point::ORIGIN, "界", Style::default(), None)?;
+            Ok(())
+        })?;
+        let mut malformed = frame.patch().clone();
+        malformed.runs[0].cells.remove(0);
+        let mut output = Vec::new();
+
+        let error = write_patch(
+            &mut output,
+            &malformed,
+            &Capabilities {
+                synchronized_updates: true,
+                ..Capabilities::default()
+            },
+        )
+        .expect_err("an isolated continuation must be rejected");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn configured_width_policy_rejects_mismatched_text_before_output()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let frame = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_text(Point::ORIGIN, "·", Style::default(), None)?;
+            Ok(())
+        })?;
+        let mut output = Vec::new();
+
+        let error = write_patch(
+            &mut output,
+            frame.patch(),
+            &Capabilities {
+                synchronized_updates: true,
+                width_policy: WidthPolicy::Cjk,
+                ..Capabilities::default()
+            },
+        )
+        .expect_err("the CJK width must differ from the patch's Unicode width");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(output.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_grapheme_text_is_rejected_before_output() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let frame = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_text(Point::ORIGIN, "x", Style::default(), None)?;
+            Ok(())
+        })?;
+
+        for malformed_text in ["界", "ab", "\n"] {
+            let mut malformed = frame.patch().clone();
+            let PatchCellContent::Grapheme { text, .. } = &mut malformed.runs[0].cells[0].content
+            else {
+                panic!("test patch must contain a grapheme");
+            };
+            *text = Arc::from(malformed_text);
+            let mut output = Vec::new();
+
+            let error = write_patch(
+                &mut output,
+                &malformed,
+                &Capabilities {
+                    synchronized_updates: true,
+                    ..Capabilities::default()
+                },
+            )
+            .expect_err("malformed grapheme text must be rejected");
+
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+            assert!(output.is_empty());
+        }
         Ok(())
     }
 

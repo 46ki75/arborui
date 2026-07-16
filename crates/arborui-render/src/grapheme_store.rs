@@ -10,6 +10,11 @@ use std::{
 use arborui_text::{WidthPolicy, graphemes};
 
 /// Stable identity for an interned grapheme cluster.
+///
+/// IDs produced by a renderer remain associated with the same grapheme text
+/// within that renderer's patch stream. Producers of manually constructed
+/// patch streams must preserve the same identity-to-text mapping across
+/// patches.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub struct GraphemeId(u32);
 

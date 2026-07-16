@@ -72,7 +72,9 @@ contract should not expose the storage choice.
 
 Cells reference complete UTF-8 grapheme strings through a renderer-owned
 store. IDs are generation-protected or otherwise guaranteed not to alias a
-stale value.
+stale value. Renderer-generated IDs remain associated with the same grapheme
+text within that renderer's patch stream. Producers of manually constructed
+patch streams must likewise preserve each ID-to-text mapping across patches.
 
 Required properties:
 
@@ -214,6 +216,29 @@ pub struct FramePatch {
     pub full_repaint: bool,
 }
 ```
+
+Wide grapheme spans are atomic within a `CellRun`. A `Grapheme` of width `n`
+is immediately followed by `n - 1` `Continuation` cells in that same run. The
+continuations have matching grapheme identity, style, and hyperlink metadata,
+and offsets `1..n`; a run therefore never starts with a continuation. Backends
+emit the leading grapheme once and skip those covered continuation cells.
+
+`FramePatch::validate` checks this contract and run geometry for manually
+constructed patches. Runs are globally row-major and non-overlapping. A full
+repaint of a nonempty frame has exact coverage: one complete run for each row.
+A zero-area full repaint needs no runs and remains an empty patch.
+
+Renderer-generated patches are always valid, expanding a changed range to
+include a complete wide span when necessary. Structural validation deliberately
+does not inspect grapheme text, so logical replay through `apply_to` does not
+need a terminal width policy. `FramePatch::validate_for_width_policy` adds the
+backend preflight: each text value must be exactly one printable grapheme whose
+measured width under the active policy matches its declared width, and one ID
+cannot map to conflicting text values visible within that patch. This per-patch
+check cannot detect an ID being reused for different text in separate manually
+constructed patches; the stream producer must uphold cross-patch identity.
+Renderers use their active policy for debug validation, and backends must use
+their terminal capability policy before producing any output.
 
 The final representation may borrow cells from a prepared frame to reduce
 allocation. That optimization must not permit the renderer to mutate or free

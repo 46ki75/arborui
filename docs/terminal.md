@@ -41,6 +41,22 @@ The final trait may split input, output, and lifecycle into separate traits for
 remote and embedded use cases. The first implementation should keep the common
 case simple while avoiding backend-specific associated types in UI APIs.
 
+Backends may skip `PatchCellContent::Continuation` cells: every valid
+continuation is covered by a preceding matching wide `Grapheme` in the same
+`CellRun`. Runs are row-major and non-overlapping, and a nonempty full repaint
+contains one complete run per row. Publicly constructed patches should be
+checked with `FramePatch::validate_for_width_policy`, using
+`Capabilities::width_policy`, before any bytes are written. This also rejects
+empty, multiple, or control grapheme text and declared widths that differ from
+the selected policy, as well as conflicting ID-to-text mappings visible within
+one patch. Renderer-generated IDs are stable within that renderer's patch
+stream. Producers of manually constructed patch streams must preserve each
+ID-to-text mapping across patches because per-patch validation cannot detect a
+conflict split across patches. A validation or output failure must not be
+reported as an applied patch; physical state remains unknown under the existing
+transactional write contract. Policy-independent logical replay can use the
+structural `FramePatch::validate` check performed by `apply_to`.
+
 ## Normalized Input
 
 ```rust

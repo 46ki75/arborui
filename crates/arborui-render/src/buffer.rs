@@ -2,11 +2,13 @@ use std::fmt;
 
 use arborui_core::{Point, Rect, Size, Style};
 
-use crate::{Cell, CellContent, GraphemeId, HyperlinkId};
+use crate::{Cell, CellContent, FramePatchValidationError, GraphemeId, HyperlinkId};
 
 /// Errors produced by invariant-preserving buffer writes.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BufferError {
+    /// A frame patch violated its public cell-run contract.
+    InvalidPatch(FramePatchValidationError),
     /// The requested point is outside the buffer.
     OutOfBounds(Point),
     /// A grapheme width was zero.
@@ -30,6 +32,7 @@ pub enum BufferError {
 impl fmt::Display for BufferError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPatch(error) => error.fmt(formatter),
             Self::OutOfBounds(point) => write!(
                 formatter,
                 "point ({}, {}) is outside the buffer",

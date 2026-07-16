@@ -465,6 +465,27 @@ mod tests {
     }
 
     #[test]
+    fn malformed_full_repaint_is_not_applied_or_written() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let frame = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |_| Ok(()))?;
+        let mut malformed = frame.patch().clone();
+        malformed.runs.clear();
+        let mut backend = CrosstermBackend::new(Vec::new())?.with_capabilities(Capabilities {
+            synchronized_updates: true,
+            ..Capabilities::default()
+        });
+
+        let error = backend
+            .write_patch(&malformed)
+            .expect_err("an incomplete full repaint must not be reported as applied");
+
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert!(backend.writer.is_empty());
+        Ok(())
+    }
+
+    #[test]
     fn failed_apply_state_flush_is_resent_on_retry() -> io::Result<()> {
         let writer = FailFlushOnce {
             fail_on_flush: 1,
