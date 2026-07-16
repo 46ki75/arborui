@@ -50,6 +50,17 @@ bench:
     cargo bench -p arborui --bench stabilization --all-features -- --noplot
     cargo bench -p arborui-example-collection-lab --bench visible_ranges --all-features -- --noplot
 
+comparison-check:
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 fmt --manifest-path comparisons/collection-lab-ratatui/Cargo.toml -- --check
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 clippy --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --all-targets --locked -- -D warnings
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 test --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --locked
+
+comparison-bench-smoke:
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 test --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --bench application_turns --locked
+
+comparison-bench:
+    CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 bench --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --bench application_turns --locked -- --noplot
+
 package-check:
     bash scripts/check-package-contents.sh
 

@@ -1,0 +1,25 @@
+[package]
+name = "arborui-comparison-collection-lab-ratatui"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.88"
+publish = false
+
+[dependencies]
+arborui-example-collection-lab = { path = "../../examples/collection-lab" }
+ratatui = { version = "=0.30.2", default-features = false }
+
+[dev-dependencies]
+arborui-test = { path = "../../crates/arborui-test" }
+criterion = { version = "=0.7.0", default-features = false }
+
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "forbid"
+
+[lints.clippy]
+unwrap_used = "deny"
+
+[[bench]]
+name = "application_turns"
+harness = false

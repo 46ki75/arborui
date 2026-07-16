@@ -212,6 +212,12 @@ impl VariableHeightProvider {
             .filter(|_| index < self.len())
     }
 
+    /// Returns the item containing one logical content offset.
+    #[must_use]
+    pub fn item_index_at_offset(&self, offset: usize) -> Option<usize> {
+        self.item_at_offset(offset)
+    }
+
     /// Captures the item and intra-item offset at a scroll position.
     #[must_use]
     pub fn anchor(&self, scroll: usize) -> Option<HeightAnchor> {
@@ -485,7 +491,10 @@ impl CollectionLab {
     fn index_for_offset(&self, offset: usize) -> usize {
         match self.mode {
             CollectionMode::Fixed => offset.min(self.items.len().saturating_sub(1)),
-            CollectionMode::Variable => self.variable.item_at_offset(offset).unwrap_or_default(),
+            CollectionMode::Variable => self
+                .variable
+                .item_index_at_offset(offset)
+                .unwrap_or_default(),
         }
     }
 

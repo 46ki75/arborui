@@ -452,9 +452,12 @@ Status: in progress. Focus Queue contains controlled modal editing, external
 work, cancellation, settlement, recovery, and bounded observable ingress.
 Collection Lab separately proves fixed and cached variable-height visible-range
 construction, overscan, stable-key selection, collection focus, resize, and
-bounded retained tree size through facade-only tests and benchmarks. Table and
-select controls, comparative evidence, and the complete production-scale proof
-remain planned.
+bounded retained tree size through facade-only tests and benchmarks. A matched,
+isolated Ratatui 0.30.2 package now proves semantic and character-frame parity,
+bounded million-row construction, idle policy, and first complete logical-turn
+timings. Production output bytes, allocations, retained memory, phase timings,
+table and select controls, and the complete production-scale proof remain
+planned.
 
 Deliver:
 

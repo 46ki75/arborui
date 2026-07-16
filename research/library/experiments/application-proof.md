@@ -150,6 +150,40 @@ binary lookup measured approximately 17, 31, and 37 nanoseconds. These local
 numbers establish algorithm shape for the prototype; they are not portable
 end-to-end application claims.
 
+A separately locked
+[`Collection Lab Ratatui comparison`](../../../comparisons/collection-lab-ratatui/)
+pins Ratatui 0.30.2 and uses the same providers, generated labels, stable keys,
+measurements, overscan, dimensions, and action traces. It is excluded from the
+product workspace so Ratatui does not enter the facade-only example graph. Its
+six deterministic tests prove exact character-frame and semantic equivalence
+for the canonical variable trace, stable identity through unmount and reverse,
+ten constructed rows at one million fixed-height items, zero changed cells for
+an explicit unchanged Ratatui redraw, and zero backend work when no redraw is
+requested. Both test backends also report non-zero logical output for one-row
+navigation.
+
+The comparison requires Rust 1.88.0 because that is Ratatui 0.30.2's MSRV;
+ArborUI remains pinned to Rust 1.85.0. One optimized run on 2026-07-17 under
+Linux WSL2 on an Intel Core Ultra 7 255H measured these complete logical turns:
+
+| Rows | Mode | ArborUI | Ratatui |
+| ---: | --- | ---: | ---: |
+| 1,000 | Fixed | 83.9 us | 9.50 us |
+| 100,000 | Fixed | 82.1 us | 9.53 us |
+| 1,000,000 | Fixed | 80.5 us | 12.4 us |
+| 1,000 | Variable | 95.2 us | 11.8 us |
+| 100,000 | Variable | 94.9 us | 11.2 us |
+| 1,000,000 | Variable | 93.3 us | 11.4 us |
+
+The million-row fixed Ratatui result had a wide 11.3-13.6 microsecond interval
+and substantial outliers. Both sides remain approximately flat as logical item
+count grows, confirming bounded virtualization. The roughly 6.5-8.8 times local
+latency difference is not attributable to one isolated subsystem: ArborUI's
+message-to-settled-frame path includes runtime settlement, retained
+reconciliation, layout, hit geometry, and cloned test patches, while the matched
+Ratatui application directly updates and redraws an immediate buffer. Production
+ANSI bytes, allocation counts, and retained memory are not measured yet.
+
 The widget unit tests independently verify checkbox activation and that a dialog
 owns focus, handles Escape, and replaces lower pointer targets.
 
@@ -241,8 +275,10 @@ requirements open:
 - Integration with a real service, subprocess, or async executor rather than the
   demonstration thread producer
 
-The next application evidence should compare a matched Ratatui implementation
-and gather application-level latency, allocation, emitted-byte, idle-work, and
-retained-memory measurements before selecting optimization work. Select and
-table requirements can then extend the pilot without treating this local
-collection experiment as a stabilized widget API.
+The next application evidence should separate production ANSI bytes,
+allocations, retained memory, and phase costs before selecting optimization
+work. The matched logical comparison should add initial render, Page Down, End,
+resize, selection, reverse, and explicit unchanged-redraw timing rather than
+generalizing from alternating one-row navigation. Select and table requirements
+can then extend the pilot without treating this local collection experiment as a
+stabilized widget API.
