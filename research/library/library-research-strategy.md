@@ -78,22 +78,72 @@ A project may receive more than one tag. The classification determines which
 comparison dimensions are relevant; a presentation toolkit should not be
 criticized for intentionally lacking a full application runtime.
 
-## Target Application Context
+## ArborUI Research Scope
 
-Before interpreting findings, state which application styles ArborUI intends to
-support:
+This section defines the working product scope against which findings should be
+interpreted. It reflects ArborUI's current implementation and documented goals;
+it is not a promise that every future mode will share one rendering contract.
 
-- Full-screen dashboards
-- Forms and business applications
-- Streaming logs or conversations
-- Text editors and text-heavy tools
-- Inline interactive commands
+### Primary Application Profile
+
+ArborUI primarily targets long-running, stateful, interactive terminal
+applications that need:
+
+- A full-screen viewport owned by the application
+- Structured layout and reusable widgets
+- Keyboard, focus, mouse, overlay, and text-input interaction
+- Serialized model updates with asynchronous effects
+- Correct Unicode text measurement and rendering
+- Deterministic headless application testing
+- Reliable terminal restoration and recovery after uncertain output
+
+Representative applications include dashboards, forms, administrative tools,
+interactive development tools, and text-heavy applications with dynamic
+content. These are the main scenarios for direct comparisons.
+
+### Current Screen-Mode Baseline
+
+The implemented high-level runtime owns and repaints a complete viewport in the
+alternate screen. This is the baseline for evaluating rendering, interaction,
+scheduling, lifecycle, and testing. A library should not receive credit for an
+inline or native-scrollback feature as though it solved the same ownership
+problem; each mode must be evaluated under its own contract.
+
+### Future Modes To Investigate
+
+ArborUI's architecture intends to leave room for additional output contexts,
+but their ownership and recovery semantics are not yet stabilized:
+
+- Inline regions on the main screen
 - Applications that preserve native terminal scrollback
-- Remote, embedded, or headless terminals
+- Remote terminal transports
+- Embedded backends
+- Headless rendering and application testing
+
+Research should identify proven contracts and failure modes for these contexts,
+especially scrolling, resize recovery, immutable history, cursor ownership,
+external output, suspension, and physical-screen resynchronization. Findings
+may result in separate explicit modes rather than a configurable variant of the
+full-screen renderer.
+
+### Secondary And Adjacent Use Cases
+
+Presentation toolkits, progress displays, short-lived prompts, and shell helpers
+are adjacent rather than direct competitors. Study them for focused lessons in
+formatting, composability, terminal degradation, and ergonomics, but do not use
+their narrower scope as evidence against a full application framework.
+
+Rich text editors, image or sixel rendering, foreign-language bindings, CSS
+cascading, and a mandatory async runtime are not current ArborUI goals. They may
+expose useful subsystem techniques, but they should not drive the comparative
+verdict.
+
+### Scope Interpretation
 
 Alternate-screen, inline-region, and native-scrollback applications have
-different ownership and recovery semantics. Conclusions about one mode do not
-automatically apply to the others.
+fundamentally different ownership and recovery semantics. Every report should
+state which mode an observation concerns and whether it applies to ArborUI's
+current baseline, a future mode, or only an adjacent use case.
 
 ## Comparison Dimensions
 
@@ -197,6 +247,7 @@ Record:
 
 - Language and implementation technologies
 - Project category and intended applications
+- Whether the project presents itself as a library, framework, toolkit, or backend
 - Version or revision examined
 - Maintenance and release status
 - Important ecosystem context
@@ -339,29 +390,147 @@ Every substantial report should answer:
 Include one or two representative test examples when possible. The purpose is
 to understand the testing model and its blind spots, not to count test files.
 
-## Evidence Standards
+## Evidence Policy
+
+The reports must make it possible to distinguish current verified behavior from
+project intent, historical reports, and researcher inference.
+
+### Research Baseline
+
+Every report begins with an evidence header containing:
+
+```text
+Research date:
+Project version:
+Project revision:
+Repository:
+Documentation version:
+Primary platform examined:
+Report depth:
+```
+
+Use the latest stable release available when research begins as the default
+baseline. Record the exact release and source revision. If unreleased behavior
+on the main branch is relevant, discuss it separately and pin it to a commit;
+do not silently combine release and development behavior.
+
+Pin documentation separately from source. When a website documents only the
+current development branch, record its revision or access date and verify
+release-sensitive claims against versioned API documentation or tagged source.
+Do not assume the current website describes the selected stable release.
+
+When a project has no stable release, pin the repository revision and state
+that the report examines a development snapshot. If platform-specific behavior
+is material, record the operating system, terminal, multiplexer, and relevant
+environment configuration.
+
+### Source Priority
 
 Prefer evidence in this order:
 
-1. Implementation and tests
-2. Architecture and API documentation
+1. Implementation and tests at the recorded revision
+2. Version-matched architecture and API documentation
 3. Maintainer explanations and migration postmortems
 4. Reproducible issues with minimal examples
 5. Workarounds used by substantial applications
 6. README claims and secondary commentary
 
-For consequential claims:
+Marketing descriptions may establish project intent, but they do not verify
+implementation behavior. The absence of a documented feature is not proof that
+the feature is impossible; check implementation, tests, issues, and extension
+points before making a negative claim.
 
-- Link to the primary source
-- Record the relevant version, revision, date, and issue status
-- State whether the behavior was reproduced or inferred
-- Separate maintainer intent from observed implementation behavior
-- Check whether later releases changed the conclusion
-- Assign a confidence level when evidence is incomplete
+When reporting that a repository contains no test facility, benchmark, harness,
+or other mechanism, state the searched revision and scope. Phrase the result as
+"not found at the recorded revision" rather than claiming universal absence.
+
+### Evidence Status
+
+Assign one status to every consequential finding:
+
+| Status | Meaning |
+| --- | --- |
+| Verified | Confirmed in current implementation or reproduced against the recorded version |
+| Supported | Established by current primary documentation or multiple consistent primary sources, but not reproduced |
+| Reported | Described in a credible issue, maintainer statement, or application postmortem but not independently verified |
+| Inferred | Deduced from architecture or source without an explicit contract or reproduction |
+| Unknown | Available evidence is insufficient or contradictory |
+
+Use high confidence only for verified findings, medium confidence for supported
+findings, and low confidence for reported or inferred findings. Unknown findings
+remain open questions and must not appear as conclusions.
+
+### Citation Requirements
+
+Use descriptive inline Markdown links at the point where evidence supports a
+claim. The evidence appendix records the complete context:
+
+| Field | Required content |
+| --- | --- |
+| Claim | The specific conclusion supported by the source |
+| Source | Descriptive link to code, test, documentation, issue, or application |
+| Version or revision | Release, tag, or commit to which the evidence applies |
+| Source date | Publication, commit, or issue date when available |
+| Accessed | Date the source was examined |
+| Status | Verified, supported, reported, inferred, or unknown |
+| Notes | Reproduction result, issue state, platform limits, or later changes |
+
+Prefer immutable links to tagged documentation or commit-pinned source lines.
+For issues and discussions, record whether they are open or closed and whether a
+linked change actually shipped. Keep direct quotations short, exact, and in
+their original context.
+
+### Negative And Historical Claims
+
+Before reporting a flaw or missing capability:
+
+- State the application requirement it affects
+- Confirm that the finding applies to the recorded baseline
+- Search for an official extension point or documented workaround
+- Check open and closed issues for later fixes or rejected designs
+- Classify the finding using the problem types defined above
+- Record the workaround and its cost
+
+Historical evidence must be labeled with the affected version and followed by a
+current-status check. Historical failures remain useful when they reveal an
+architectural tradeoff, migration trigger, or testing lesson, but they are not
+evidence that the current project still has the same behavior.
 
 Issue counts and isolated complaints are not evidence of general quality.
 Search for recurring failure patterns, blocked architectural changes, forks,
 and workarounds that cross subsystem boundaries.
+
+### Reproduction Policy
+
+Reproduce a claim when it is consequential to ArborUI, disputed, poorly
+documented, or central to a comparative conclusion. Do not reproduce every
+minor issue.
+
+For each reproduction, record:
+
+- Exact project version or revision
+- Platform, terminal size, terminal emulator, and relevant environment
+- Minimal source or fixture
+- Commands and configuration
+- Expected and observed behavior
+- Whether the result was repeatable
+- Any generated snapshot, trace, benchmark, or terminal capture
+
+Store reusable fixtures or prototypes alongside the report only when they add
+evidence that cannot be represented clearly in prose. Do not commit credentials,
+machine-specific paths, or unreviewed generated artifacts.
+
+### Performance Evidence
+
+Treat performance as a reproducible claim rather than a general impression.
+Record the workload, application state, dimensions, update pattern, hardware,
+software versions, build mode, sample count, and measured metrics. Prefer
+end-to-end latency, emitted bytes, allocations, memory, and idle work over an
+isolated throughput number.
+
+Do not compare benchmark numbers from different projects unless the workload
+and environment are materially equivalent. A project-authored benchmark can
+explain its own optimization but does not establish cross-project superiority.
 
 ## Research Workflow
 
