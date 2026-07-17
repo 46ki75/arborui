@@ -413,8 +413,16 @@ impl UiTree {
     }
 
     /// Discards a prepared frame without advancing retained or rendered state.
+    ///
+    /// Use this only when none of the patch may have reached physical output.
+    /// Otherwise, use [`Self::discard_uncertain`].
     pub fn discard(&mut self, prepared: PreparedUiFrame, renderer: &mut Renderer) {
         renderer.discard(prepared.frame);
+    }
+
+    /// Discards a prepared frame and marks physical output state as unknown.
+    pub fn discard_uncertain(&mut self, prepared: PreparedUiFrame, renderer: &mut Renderer) {
+        renderer.discard_uncertain(prepared.frame);
     }
 
     /// Routes one event through handlers borrowed by the current element tree.

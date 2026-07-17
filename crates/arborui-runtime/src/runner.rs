@@ -625,8 +625,7 @@ impl<A: Application> AppRunner<A> {
             match session.write_patch(prepared.patch()) {
                 Ok(outcome) => outcome,
                 Err(error) => {
-                    self.ui.discard(prepared, &mut self.renderer);
-                    self.renderer.invalidate();
+                    self.ui.discard_uncertain(prepared, &mut self.renderer);
                     return Err(RuntimeError::Backend(error));
                 }
             }
@@ -675,8 +674,7 @@ impl<A: Application> AppRunner<A> {
             match session.write_patch(prepared.patch()) {
                 Ok(outcome) => (outcome, Some(write_started.elapsed())),
                 Err(error) => {
-                    self.ui.discard(prepared, &mut self.renderer);
-                    self.renderer.invalidate();
+                    self.ui.discard_uncertain(prepared, &mut self.renderer);
                     return Err(RuntimeError::Backend(error));
                 }
             }
@@ -880,8 +878,7 @@ impl<A: Application> AppRunner<A> {
                 Ok((TerminalRenderOutcome::Deferred, None))
             }
             WriteOutcome::StateUnknown => {
-                self.ui.discard(prepared, &mut self.renderer);
-                self.renderer.invalidate();
+                self.ui.discard_uncertain(prepared, &mut self.renderer);
                 self.invalidation.request(Invalidation::Paint);
                 Ok((TerminalRenderOutcome::StateUnknown, None))
             }

@@ -340,6 +340,9 @@ impl LayoutTree {
     /// Computes the root subtree for `viewport` using a caller-owned leaf measurer.
     ///
     /// An automatic root dimension fills the corresponding viewport dimension.
+    /// If the measurer's result for a node can differ from its previous result,
+    /// callers must invalidate that node before computing. This also applies to
+    /// staged trees, which may share cached measurements with their source tree.
     pub fn compute<F>(
         &mut self,
         root: LayoutNodeId,

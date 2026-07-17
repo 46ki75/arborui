@@ -869,7 +869,18 @@ impl Renderer {
     }
 
     /// Discards a prepared frame without changing committed state.
+    ///
+    /// Use this only when none of the patch may have reached the physical output.
+    /// If output state may have changed, use [`Self::discard_uncertain`] instead.
     pub fn discard(&mut self, _prepared: PreparedFrame) {}
+
+    /// Discards a prepared frame and marks physical output state as unknown.
+    ///
+    /// The next prepared patch will repaint every cell.
+    pub fn discard_uncertain(&mut self, prepared: PreparedFrame) {
+        self.discard(prepared);
+        self.invalidate();
+    }
 
     /// Marks physical terminal state as unknown so the next patch repaints all cells.
     pub fn invalidate(&mut self) {
@@ -1519,6 +1530,23 @@ mod tests {
             Ok(())
         })?;
         assert!(!retry.patch().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn uncertain_discard_forces_full_repaint() -> Result<(), RenderError> {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let initial = renderer.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
+        assert_eq!(renderer.commit(initial), Ok(()));
+        let changed = renderer.prepare(Size::new(1, 1), CursorState::default(), |canvas| {
+            canvas.draw_text(Point::ORIGIN, "x", Style::default(), None)?;
+            Ok(())
+        })?;
+
+        renderer.discard_uncertain(changed);
+
+        let retry = renderer.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
+        assert!(retry.patch().full_repaint);
         Ok(())
     }
 
