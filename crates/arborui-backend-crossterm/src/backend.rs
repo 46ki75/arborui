@@ -91,6 +91,84 @@ impl<W: Write + Send> CrosstermBackend<W> {
         self.active.cursor = cursor;
         Ok(())
     }
+
+    fn restore_with<F>(&mut self, disable_raw: F) -> io::Result<()>
+    where
+        F: FnOnce() -> io::Result<()>,
+    {
+        let output_result = (|| -> io::Result<()> {
+            if self.keyboard_pushed {
+                self.writer.queue(PopKeyboardEnhancementFlags)?;
+                self.keyboard_pushed = false;
+            }
+            if self.active.mouse == MouseMode::Capture || self.confirmed.mouse == MouseMode::Capture
+            {
+                self.writer.queue(DisableMouseCapture)?;
+            }
+            if self.active.bracketed_paste || self.confirmed.bracketed_paste {
+                self.writer.queue(DisableBracketedPaste)?;
+            }
+            if self.active.focus_reporting || self.confirmed.focus_reporting {
+                self.writer.queue(DisableFocusChange)?;
+            }
+            if self.active.screen == ScreenMode::Alternate
+                || self.confirmed.screen == ScreenMode::Alternate
+            {
+                self.writer.queue(LeaveAlternateScreen)?;
+            }
+            if self.active.autowrap == AutowrapMode::Disabled
+                || self.confirmed.autowrap == AutowrapMode::Disabled
+            {
+                self.writer.queue(EnableLineWrap)?;
+            }
+            if self.active.title.is_some() || self.confirmed.title.is_some() {
+                self.writer.queue(SetTitle(""))?;
+            }
+            self.writer.queue(SetAttribute(Attribute::Reset))?;
+            self.writer.queue(SetForegroundColor(Color::Reset))?;
+            self.writer.queue(SetBackgroundColor(Color::Reset))?;
+            self.writer.queue(SetCursorStyle::DefaultUserShape)?;
+            self.writer.queue(Show)?;
+            self.writer.flush()
+        })();
+
+        if output_result.is_ok() {
+            // Output state is physically restored even if the separate raw-mode
+            // operation fails, so a later activation must reapply every mode.
+            self.active = TerminalState {
+                raw_mode: self.active.raw_mode,
+                ..TerminalState::default()
+            };
+            self.confirmed = self.active.clone();
+        }
+
+        let raw_result = if self.active.raw_mode && !self.original_raw_mode {
+            let result = disable_raw();
+            if result.is_ok() {
+                self.active.raw_mode = false;
+                self.confirmed.raw_mode = false;
+            }
+            result
+        } else {
+            Ok(())
+        };
+
+        if output_result.is_err() {
+            self.confirmed = TerminalState {
+                raw_mode: self.active.raw_mode,
+                ..TerminalState::default()
+            };
+        }
+        let result = output_result.and(raw_result);
+        if result.is_ok() {
+            self.active = TerminalState {
+                raw_mode: self.original_raw_mode,
+                ..TerminalState::default()
+            };
+            self.confirmed = self.active.clone();
+        }
+        result
+    }
 }
 
 impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
@@ -230,68 +308,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
     }
 
     fn restore(&mut self) -> Result<(), Self::Error> {
-        let output_result = (|| -> io::Result<()> {
-            if self.keyboard_pushed {
-                self.writer.queue(PopKeyboardEnhancementFlags)?;
-                self.keyboard_pushed = false;
-            }
-            if self.active.mouse == MouseMode::Capture || self.confirmed.mouse == MouseMode::Capture
-            {
-                self.writer.queue(DisableMouseCapture)?;
-            }
-            if self.active.bracketed_paste || self.confirmed.bracketed_paste {
-                self.writer.queue(DisableBracketedPaste)?;
-            }
-            if self.active.focus_reporting || self.confirmed.focus_reporting {
-                self.writer.queue(DisableFocusChange)?;
-            }
-            if self.active.screen == ScreenMode::Alternate
-                || self.confirmed.screen == ScreenMode::Alternate
-            {
-                self.writer.queue(LeaveAlternateScreen)?;
-            }
-            if self.active.autowrap == AutowrapMode::Disabled
-                || self.confirmed.autowrap == AutowrapMode::Disabled
-            {
-                self.writer.queue(EnableLineWrap)?;
-            }
-            if self.active.title.is_some() || self.confirmed.title.is_some() {
-                self.writer.queue(SetTitle(""))?;
-            }
-            self.writer.queue(SetAttribute(Attribute::Reset))?;
-            self.writer.queue(SetForegroundColor(Color::Reset))?;
-            self.writer.queue(SetBackgroundColor(Color::Reset))?;
-            self.writer.queue(SetCursorStyle::DefaultUserShape)?;
-            self.writer.queue(Show)?;
-            self.writer.flush()
-        })();
-
-        let raw_result = if self.active.raw_mode && !self.original_raw_mode {
-            let result = disable_raw_mode();
-            if result.is_ok() {
-                self.active.raw_mode = false;
-                self.confirmed.raw_mode = false;
-            }
-            result
-        } else {
-            Ok(())
-        };
-
-        if output_result.is_err() {
-            self.confirmed = TerminalState {
-                raw_mode: self.active.raw_mode,
-                ..TerminalState::default()
-            };
-        }
-        let result = output_result.and(raw_result);
-        if result.is_ok() {
-            self.active = TerminalState {
-                raw_mode: self.original_raw_mode,
-                ..TerminalState::default()
-            };
-            self.confirmed = self.active.clone();
-        }
-        result
+        self.restore_with(disable_raw_mode)
     }
 }
 
@@ -581,6 +598,51 @@ mod tests {
             matches!((last_enter, last_leave), (Some(enter), Some(leave)) if enter > leave),
             "a failed restore flush leaves a queued leave-alternate-screen sequence, so the \
              tracked screen mode must be invalidated and re-entered before output resumes"
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn successful_restore_output_is_reapplied_after_raw_mode_failure() -> io::Result<()> {
+        let active = TerminalState {
+            raw_mode: true,
+            screen: ScreenMode::Alternate,
+            ..TerminalState::default()
+        };
+        let mut backend = CrosstermBackend {
+            writer: Vec::new(),
+            capabilities: Capabilities::default(),
+            active: active.clone(),
+            confirmed: active,
+            keyboard_pushed: false,
+            original_raw_mode: false,
+        };
+
+        assert!(
+            backend
+                .restore_with(|| Err(io::Error::other("injected raw-mode failure")))
+                .is_err()
+        );
+        backend.apply_state(&TerminalState {
+            raw_mode: true,
+            screen: ScreenMode::Alternate,
+            ..TerminalState::default()
+        })?;
+
+        let enter_alternate: &[u8] = b"\x1b[?1049h";
+        let leave_alternate: &[u8] = b"\x1b[?1049l";
+        let last_enter = backend
+            .writer
+            .windows(enter_alternate.len())
+            .rposition(|window| window == enter_alternate);
+        let last_leave = backend
+            .writer
+            .windows(leave_alternate.len())
+            .rposition(|window| window == leave_alternate);
+        assert!(
+            matches!((last_enter, last_leave), (Some(enter), Some(leave)) if enter > leave),
+            "successful restore output physically left the alternate screen, so activation must \
+             enter it again even when disabling raw mode failed"
         );
         Ok(())
     }

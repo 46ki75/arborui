@@ -237,8 +237,7 @@ impl LayoutTree {
     /// Adds an unattached node.
     pub fn add(&mut self, style: LayoutStyle) -> LayoutNodeId {
         if self.engine.is_some() {
-            self.detach_engine()
-                .expect("an initialized layout engine can be detached");
+            self.detach_engine_or_rebuild();
         }
         if self.tree_id == 0 {
             self.tree_id = next_tree_id();
@@ -486,10 +485,24 @@ impl LayoutTree {
         Ok(())
     }
 
+    fn detach_engine_or_rebuild(&mut self) {
+        let Some(shared) = self.engine.as_mut() else {
+            return;
+        };
+        if Rc::strong_count(shared) > 1 {
+            // `add` cannot report a borrow error, so recover from a reentrant staged
+            // computation by rebuilding this derived cache from canonical tree state.
+            let detached = shared.try_borrow().map_or_else(
+                |_| engine::Engine::from_nodes(self.tree_id, &self.nodes),
+                |engine| engine.clone(),
+            );
+            *shared = Rc::new(RefCell::new(detached));
+        }
+    }
+
     fn remove_subtree(&mut self, node: LayoutNodeId) {
         if self.engine.is_some() {
-            self.detach_engine()
-                .expect("an initialized layout engine can be detached");
+            self.detach_engine_or_rebuild();
         }
         let Some(removed) = self.nodes.remove(node) else {
             return;
@@ -879,6 +892,25 @@ mod tests {
 
         assert!(matches!(mutation, Some(Err(LayoutError::Engine(_)))));
         assert_eq!(source.node(leaf)?.style, LayoutStyle::default());
+        Ok(())
+    }
+
+    #[test]
+    fn reentrant_staging_add_detaches_from_the_borrowed_engine() -> Result<(), LayoutError> {
+        let mut source = LayoutTree::new();
+        let leaf = source.add(LayoutStyle::default());
+        let root = source.add_with_children(LayoutStyle::default(), &[leaf])?;
+        let mut staged = source.clone_for_staging();
+        let mut added = None;
+
+        staged.compute(root, Size::new(8, 1), |_, _| {
+            added = Some(source.add(LayoutStyle::default()));
+            Size::new(3, 1)
+        })?;
+
+        let added = added.expect("the leaf measurement should add a source node");
+        assert!(source.node(added).is_ok());
+        assert!(!source.shares_engine_with(&staged));
         Ok(())
     }
 

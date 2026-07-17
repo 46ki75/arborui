@@ -1106,8 +1106,12 @@ impl UiTree {
             };
             new_children.push(self.reconcile_node(Some(node_id), candidate, child, report));
         }
+        let retained_children = new_children
+            .iter()
+            .copied()
+            .collect::<std::collections::HashSet<_>>();
         for old in old_children {
-            if self.nodes.contains_key(&old) && !new_children.contains(&old) {
+            if self.nodes.contains_key(&old) && !retained_children.contains(&old) {
                 self.remove_subtree(old, report);
             }
         }

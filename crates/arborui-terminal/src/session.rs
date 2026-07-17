@@ -53,11 +53,11 @@ impl<B: TerminalBackend> TerminalSession<B> {
 
     /// Applies and records new desired terminal state.
     pub fn apply_state(&mut self, desired: TerminalState) -> Result<(), B::Error> {
+        self.desired = desired;
         if !self.suspended {
             self.full_repaint_required = true;
-            self.backend.apply_state(&desired)?;
+            self.backend.apply_state(&self.desired)?;
         }
-        self.desired = desired;
         Ok(())
     }
 
@@ -83,14 +83,13 @@ impl<B: TerminalBackend> TerminalSession<B> {
 
     /// Restores terminal modes temporarily for a child process or shell.
     pub fn suspend(&mut self) -> Result<(), B::Error> {
-        if self.suspended {
-            if self.cleanup_required {
-                self.full_repaint_required = true;
-                self.backend.restore()?;
-                self.cleanup_required = false;
-            }
+        if self.suspended && !self.cleanup_required {
             return Ok(());
         }
+        self.restore_backend()
+    }
+
+    fn restore_backend(&mut self) -> Result<(), B::Error> {
         self.full_repaint_required = true;
         self.suspended = true;
         self.cleanup_required = true;
@@ -126,12 +125,7 @@ impl<B: TerminalBackend> TerminalSession<B> {
         if self.suspended && !self.cleanup_required {
             return Ok(());
         }
-        self.full_repaint_required = true;
-        self.backend.restore()?;
-        self.suspended = true;
-        self.cleanup_required = false;
-        self.full_repaint_required = true;
-        Ok(())
+        self.restore_backend()
     }
 
     /// Returns whether terminal modes are currently restored.
@@ -386,6 +380,22 @@ mod tests {
     }
 
     #[test]
+    fn failed_active_apply_state_retains_the_latest_desired_state() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_apply_on: 2,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan), TerminalState::fullscreen())?;
+        let desired = TerminalState::default();
+
+        assert!(session.apply_state(desired.clone()).is_err());
+
+        assert_eq!(session.desired_state(), &desired);
+        Ok(())
+    }
+
+    #[test]
     fn failed_suspend_requires_full_repaint() -> io::Result<()> {
         let plan = FailurePlan {
             fail_restore_on: 1,
@@ -429,6 +439,22 @@ mod tests {
 
         assert!(session.restore().is_err());
         assert!(session.take_full_repaint_required());
+        Ok(())
+    }
+
+    #[test]
+    fn failed_explicit_restore_marks_the_session_unavailable() -> io::Result<()> {
+        let plan = FailurePlan {
+            fail_restore_on: 1,
+            ..FailurePlan::default()
+        };
+        let mut session =
+            TerminalSession::open(failing_backend(plan), TerminalState::fullscreen())?;
+
+        assert!(session.restore().is_err());
+
+        assert!(!session.is_active());
+        assert!(!session.is_suspended());
         Ok(())
     }
 
