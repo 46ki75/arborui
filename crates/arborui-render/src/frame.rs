@@ -892,10 +892,15 @@ fn diff(
     width_policy: WidthPolicy,
 ) -> Result<FramePatch, GraphemeStoreError> {
     let size = next.size();
-    let mut runs = Vec::new();
+    let mut runs = Vec::with_capacity(if full_repaint {
+        usize::from(size.height)
+    } else {
+        0
+    });
+    let mut changed = vec![false; usize::from(size.width)];
 
     for y in 0..size.height {
-        let mut changed = vec![full_repaint; usize::from(size.width)];
+        changed.fill(full_repaint);
         if !full_repaint {
             for x in 0..size.width {
                 let point = Point::new(i32::from(x), i32::from(y));

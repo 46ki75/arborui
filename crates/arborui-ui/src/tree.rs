@@ -1634,7 +1634,7 @@ mod tests {
     use std::{cell::Cell, rc::Rc};
 
     use arborui_core::{Color, CursorShape, Modifier, Size, Style};
-    use arborui_layout::{Dimension, FlexDirection, LayoutStyle};
+    use arborui_layout::{Dimension, FlexDirection, LayoutStyle, Position};
     use arborui_render::PatchCellContent;
     use arborui_text::WidthPolicy;
 
@@ -2094,6 +2094,83 @@ mod tests {
             &mut reference_renderer,
             Some(false),
         )?;
+        Ok(())
+    }
+
+    #[test]
+    fn paint_only_ancestor_style_handles_clipped_absolute_descendant() -> Result<(), UiError> {
+        let size = Size::new(4, 3);
+        let view = |color| {
+            Element::<()>::container([Element::container([Element::text("A\nB\nC").layout(
+                LayoutStyle::new()
+                    .size(Dimension::cells(1), Dimension::cells(3))
+                    .position(Position::Absolute),
+            )])
+            .key(1_u64)
+            .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)))
+            .style(Style::new().foreground(color))])
+        };
+        let mut incremental_tree = UiTree::new();
+        let mut reference_tree = UiTree::new();
+        let mut incremental_renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut reference_renderer = Renderer::new(size, WidthPolicy::Unicode);
+
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &view(Color::Red),
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+
+        let root = incremental_tree.root().expect("root exists");
+        let ancestor = incremental_tree.node(root).expect("root exists").children()[0];
+        let descendant = incremental_tree
+            .node(ancestor)
+            .expect("ancestor exists")
+            .children()[0];
+        assert!(
+            incremental_tree
+                .node(descendant)
+                .expect("descendant exists")
+                .layout()
+                .bottom()
+                > incremental_tree
+                    .node(ancestor)
+                    .expect("ancestor exists")
+                    .layout()
+                    .bottom()
+        );
+
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &view(Color::Blue),
+            size,
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(false),
+        )?;
+
+        assert_eq!(
+            incremental_renderer
+                .current()
+                .get(Point::ORIGIN)
+                .expect("origin is visible")
+                .style
+                .foreground,
+            Some(Color::Blue)
+        );
+        assert_eq!(
+            incremental_renderer
+                .current()
+                .get(Point::new(0, 1))
+                .expect("second row is visible")
+                .style,
+            Style::default()
+        );
         Ok(())
     }
 

@@ -33,7 +33,10 @@ deny:
     cargo deny --locked --manifest-path fuzz/Cargo.toml check
     cargo deny --locked --manifest-path comparisons/collection-lab-ratatui/Cargo.toml check
 
-ci: fmt-check lint test doc
+architecture-check:
+    node scripts/check-architecture-dependencies.mjs
+
+ci: fmt-check architecture-check lint test doc
 
 test-cov:
     cargo llvm-cov --no-report --workspace --all-features
