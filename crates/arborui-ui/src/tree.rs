@@ -134,7 +134,7 @@ pub struct PreparedUiFrame {
     base_revision: u64,
 }
 
-/// Time spent in the opt-in phases of UI frame preparation.
+/// Opt-in timing and logical repaint work for UI frame preparation.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct UiPreparationTimings {
     /// Time spent cloning retained state, reconciling the declarative tree, and
@@ -147,6 +147,10 @@ pub struct UiPreparationTimings {
     pub paint: Duration,
     /// Time spent diffing and constructing the renderer's prepared frame.
     pub diff: Duration,
+    /// Number of logical repaint regions cleared and replayed.
+    pub repaint_regions: usize,
+    /// Number of terminal cells covered by the logical repaint regions.
+    pub repaint_cells: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -170,6 +174,51 @@ struct PaintContext {
     hit: Option<HitId>,
     style: Style,
     focused: Option<NodeId>,
+}
+
+struct RowDamage {
+    rows: Vec<bool>,
+    prefix_cells: Vec<u32>,
+    regions: usize,
+    cells: u32,
+}
+
+impl RowDamage {
+    fn new(rows: Vec<bool>, width: u16) -> Self {
+        let mut prefix_cells = Vec::with_capacity(rows.len().saturating_add(1));
+        prefix_cells.push(0_u32);
+        let mut regions = 0;
+        let mut previous = false;
+        for &damaged in &rows {
+            if damaged && !previous {
+                regions += 1;
+            }
+            let cells = prefix_cells
+                .last()
+                .copied()
+                .unwrap_or_default()
+                .saturating_add(u32::from(damaged) * u32::from(width));
+            prefix_cells.push(cells);
+            previous = damaged;
+        }
+        let cells = prefix_cells.last().copied().unwrap_or_default();
+        Self {
+            rows,
+            prefix_cells,
+            regions,
+            cells,
+        }
+    }
+
+    fn intersects(&self, bounds: Rect) -> bool {
+        let start = usize::try_from(bounds.y.max(0))
+            .unwrap_or(usize::MAX)
+            .min(self.rows.len());
+        let end = usize::try_from(bounds.bottom().max(0))
+            .unwrap_or(usize::MAX)
+            .min(self.rows.len());
+        self.prefix_cells[end] > self.prefix_cells[start]
+    }
 }
 
 struct FrameLayout {
@@ -617,11 +666,12 @@ impl UiTree {
         let frame = match (force_layout, renderer_matches, staged.pending) {
             (false, true, Invalidation::None) => renderer.prepare_reused(layout.cursor)?,
             (false, true, Invalidation::Paint) => {
+                let damage = staged.damaged_rows(viewport);
                 renderer.prepare_from_current(layout.cursor, |canvas| {
                     staged.repaint_damaged_rows(
                         element,
                         canvas,
-                        viewport,
+                        &damage,
                         layout.root,
                         layout.focused,
                     )
@@ -666,23 +716,47 @@ impl UiTree {
             )
         };
 
-        let (frame, renderer_timings) = match (renderer_matches, staged.pending) {
-            (true, Invalidation::None) => renderer.prepare_reused_timed(layout.cursor)?,
-            (true, Invalidation::Paint) => {
-                renderer.prepare_from_current_timed(layout.cursor, |canvas| {
-                    staged.repaint_damaged_rows(
-                        element,
-                        canvas,
-                        viewport,
-                        layout.root,
-                        layout.focused,
+        let (frame, renderer_timings, repaint_regions, repaint_cells) =
+            match (renderer_matches, staged.pending) {
+                (true, Invalidation::None) => {
+                    let (frame, timings) = renderer.prepare_reused_timed(layout.cursor)?;
+                    (frame, timings, 0, 0)
+                }
+                (true, Invalidation::Paint) => {
+                    let damage = staged.damaged_rows(viewport);
+                    let repaint_regions = damage.regions;
+                    let repaint_cells = damage.cells;
+                    let (frame, timings) =
+                        renderer.prepare_from_current_timed(layout.cursor, |canvas| {
+                            staged.repaint_damaged_rows(
+                                element,
+                                canvas,
+                                &damage,
+                                layout.root,
+                                layout.focused,
+                            )
+                        })?;
+                    (frame, timings, repaint_regions, repaint_cells)
+                }
+                _ => {
+                    let (frame, timings) =
+                        renderer.prepare_timed(viewport, layout.cursor, |canvas| {
+                            staged.paint_frame(
+                                element,
+                                canvas,
+                                viewport,
+                                layout.root,
+                                layout.focused,
+                            )
+                        })?;
+                    (
+                        frame,
+                        timings,
+                        usize::from(!viewport.is_empty()),
+                        viewport.area(),
                     )
-                })?
-            }
-            _ => renderer.prepare_timed(viewport, layout.cursor, |canvas| {
-                staged.paint_frame(element, canvas, viewport, layout.root, layout.focused)
-            })?,
-        };
+                }
+            };
         staged.finish_frame();
         let prepared = PreparedUiFrame {
             owner: self.owner.clone(),
@@ -697,6 +771,8 @@ impl UiTree {
                 layout: layout_elapsed,
                 paint: renderer_timings.paint,
                 diff: renderer_timings.diff,
+                repaint_regions,
+                repaint_cells,
             },
         ))
     }
@@ -838,6 +914,7 @@ impl UiTree {
                 style: Style::default(),
                 focused,
             },
+            None,
         )
     }
 
@@ -845,37 +922,38 @@ impl UiTree {
         &self,
         element: &Element<'_, Message>,
         canvas: &mut Canvas<'_>,
-        viewport: Size,
+        damage: &RowDamage,
         root: NodeId,
         focused: Option<NodeId>,
     ) -> Result<(), DrawError> {
-        let Some(damage) = self.damaged_row_band(viewport) else {
-            return Ok(());
-        };
-        canvas.fill(damage, Style::default())?;
+        let clip = canvas.clip();
+        let mut canvas = canvas.with_damage_rows(&damage.rows);
+        canvas.fill(clip, Style::default())?;
         self.paint_node(
             root,
             element,
-            canvas,
+            &mut canvas,
             PaintContext {
-                clip: damage,
+                clip,
                 hit: None,
                 style: Style::default(),
                 focused,
             },
+            Some(damage),
         )
     }
 
-    fn damaged_row_band(&self, viewport: Size) -> Option<Rect> {
+    fn damaged_rows(&self, viewport: Size) -> RowDamage {
         let viewport = Rect::from_origin_size(Point::ORIGIN, viewport);
-        let mut top = i32::MAX;
-        let mut bottom = i32::MIN;
+        let mut rows = vec![false; usize::from(viewport.height)];
         let mut include = |bounds: Rect| {
             let Some(damage) = bounds.intersection(viewport) else {
                 return;
             };
-            top = top.min(damage.y);
-            bottom = bottom.max(damage.bottom());
+            let start = usize::try_from(damage.y).expect("viewport-clipped row is nonnegative");
+            let end =
+                usize::try_from(damage.bottom()).expect("viewport-clipped row end is nonnegative");
+            rows[start..end].fill(true);
         };
         for node in self
             .nodes
@@ -891,14 +969,7 @@ impl UiTree {
                 }
             }
         }
-        (top < bottom).then(|| {
-            Rect::new(
-                0,
-                top,
-                viewport.width,
-                u16::try_from(bottom - top).expect("viewport-clipped damage height fits u16"),
-            )
-        })
+        RowDamage::new(rows, viewport.width)
     }
 
     fn finish_frame(&mut self) {
@@ -1144,6 +1215,7 @@ impl UiTree {
         element: &Element<'_, Message>,
         canvas: &mut Canvas<'_>,
         inherited: PaintContext,
+        damage: Option<&RowDamage>,
     ) -> Result<(), DrawError> {
         let node = self
             .nodes
@@ -1152,6 +1224,9 @@ impl UiTree {
         let Some(clip) = inherited.clip.intersection(node.layout) else {
             return Ok(());
         };
+        if damage.is_some_and(|damage| !damage.intersects(clip)) {
+            return Ok(());
+        }
         let style = inherit_style(inherited.style, node.visual_style);
         let style = if inherited.focused == Some(retained) {
             inherit_style(style, node.focus_style)
@@ -1193,6 +1268,7 @@ impl UiTree {
                     style,
                     focused: inherited.focused,
                 },
+                damage,
             )?;
         }
         Ok(())
@@ -1779,6 +1855,17 @@ mod tests {
     }
 
     #[test]
+    fn fragmented_row_damage_counts_regions_and_cells() {
+        let damage = RowDamage::new(vec![true, false, true, false, true, false, true, false], 8);
+
+        assert_eq!(damage.regions, 4);
+        assert_eq!(damage.cells, 32);
+        assert!(damage.intersects(Rect::new(0, 4, 8, 1)));
+        assert!(!damage.intersects(Rect::new(0, 5, 8, 1)));
+        assert!(damage.intersects(Rect::new(0, 3, 8, 2)));
+    }
+
+    #[test]
     fn paint_only_preparation_skips_clean_row_callbacks() -> Result<(), UiError> {
         fn counted_row(
             key: u64,
@@ -1798,18 +1885,28 @@ mod tests {
 
         let size = Size::new(8, 4);
         let calls = std::array::from_fn::<_, 4, _>(|_| Rc::new(Cell::new(0)));
+        let root_calls = Rc::new(Cell::new(0));
+        let count_root = || {
+            let root_calls = Rc::clone(&root_calls);
+            move |_: Size, _: &mut Canvas<'_>| {
+                root_calls.set(root_calls.get() + 1);
+                Ok(())
+            }
+        };
         let initial = Element::container([
             counted_row(0, "zero", Style::new(), &calls[0]),
             counted_row(1, "one", Style::new(), &calls[1]),
             counted_row(2, "two", Style::new(), &calls[2]),
             counted_row(3, "three", Style::new(), &calls[3]),
         ])
-        .layout(LayoutStyle::new().direction(FlexDirection::Column));
+        .layout(LayoutStyle::new().direction(FlexDirection::Column))
+        .paint(0, count_root());
         let mut tree = UiTree::new();
         let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
         prepare_and_commit(&mut tree, &initial, size, &mut renderer)
             .expect("initial frame commits");
         assert!(calls.iter().all(|calls| calls.get() == 1));
+        assert_eq!(root_calls.get(), 1);
 
         let changed = Element::container([
             counted_row(0, "zero", Style::new(), &calls[0]),
@@ -1817,10 +1914,33 @@ mod tests {
             counted_row(2, "two", Style::new(), &calls[2]),
             counted_row(3, "three", Style::new(), &calls[3]),
         ])
-        .layout(LayoutStyle::new().direction(FlexDirection::Column));
+        .layout(LayoutStyle::new().direction(FlexDirection::Column))
+        .paint(0, count_root());
         let prepared = tree.prepare(&changed, size, &mut renderer)?;
 
         assert_eq!(calls.each_ref().map(|calls| calls.get()), [1, 2, 1, 1]);
+        assert_eq!(root_calls.get(), 2);
+        assert_eq!(tree.commit(prepared, &mut renderer), Ok(()));
+
+        let separated = Element::container([
+            counted_row(0, "zero", Style::new(), &calls[0]),
+            counted_row(
+                1,
+                "one",
+                Style::new().foreground(Color::BrightGreen),
+                &calls[1],
+            ),
+            counted_row(2, "two", Style::new(), &calls[2]),
+            counted_row(3, "three", Style::new().foreground(Color::Blue), &calls[3]),
+        ])
+        .layout(LayoutStyle::new().direction(FlexDirection::Column))
+        .paint(0, count_root());
+        let (prepared, timings) = tree.prepare_timed(&separated, size, &mut renderer)?;
+
+        assert_eq!(calls.each_ref().map(|calls| calls.get()), [1, 3, 1, 2]);
+        assert_eq!(root_calls.get(), 3);
+        assert_eq!(timings.repaint_regions, 2);
+        assert_eq!(timings.repaint_cells, 16);
         assert_eq!(tree.commit(prepared, &mut renderer), Ok(()));
         Ok(())
     }
@@ -1933,6 +2053,46 @@ mod tests {
             &mut incremental_renderer,
             &mut reference_renderer,
             Some(true),
+        )?;
+
+        let separated_initial = Element::<()>::container([
+            Element::text("top").key(10_u64).interactive(true),
+            Element::text("clean 界").key(11_u64).interactive(true),
+            Element::text("clean two").key(12_u64).interactive(true),
+            Element::text("bottom").key(13_u64).interactive(true),
+        ])
+        .layout(LayoutStyle::new().direction(FlexDirection::Column));
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &separated_initial,
+            Size::new(12, 4),
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(true),
+        )?;
+
+        let separated_changed = Element::<()>::container([
+            Element::text("top")
+                .key(10_u64)
+                .interactive(true)
+                .style(Style::new().foreground(Color::Blue)),
+            Element::text("clean 界").key(11_u64).interactive(true),
+            Element::text("clean two").key(12_u64).interactive(true),
+            Element::text("bottom")
+                .key(13_u64)
+                .interactive(true)
+                .style(Style::new().foreground(Color::BrightGreen)),
+        ])
+        .layout(LayoutStyle::new().direction(FlexDirection::Column));
+        compare_incremental_and_reference(
+            &mut incremental_tree,
+            &mut reference_tree,
+            &separated_changed,
+            Size::new(12, 4),
+            &mut incremental_renderer,
+            &mut reference_renderer,
+            Some(false),
         )?;
         Ok(())
     }

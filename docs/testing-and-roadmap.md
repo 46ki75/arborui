@@ -495,12 +495,16 @@ without a configured bound or observable pressure signal.
 
 ### Milestone 12: Performance Evidence And Incremental Work
 
-Status: in progress. Milestone 11 established the first application-level
+Status: implemented. Milestone 11 established the first application-level
 allocation, retained-memory, and phase-timing baseline. Whole-frame retained
 layout reuse, unchanged-frame logical-content reuse, and conservative
-full-width damaged-row repaint are now checked against a separately callable
-full-layout/full-paint reference and improve the measured collection turns;
-the matched table workload confirms bounded million-row turns and demonstrates
+full-width damaged-row repaint are checked against a separately callable
+full-layout/full-paint reference and improve the measured collection turns.
+The final finer-grained slice merges overlapping or adjacent invalid row spans
+while preserving separated full-width regions. A distant visible-row movement
+probe reduces deterministic logical repaint area from 384 to 96 cells without
+changing complete-frame or hit-map equivalence. The matched table workload
+confirms bounded million-row turns and demonstrates
 that offscreen model updates can reuse unchanged committed output. The matched
 scrolling log confirms flat million-record turns and the same reuse for paused
 producer appends. The completed matched overlay workload adds a stable stack,
@@ -524,8 +528,7 @@ completion at zero, one, and five milliseconds of imposed sink delay; attributes
 the surrounding runtime phases and output volume; and proves that bounded
 ingress remains observable while a backend write blocks. Tracked regression
 limits now protect deterministic patch shape and production output volume in
-normal CI plus broad slow-sink latency overhead in scheduled CI. Finer-grained
-incremental work remains open.
+normal CI plus broad slow-sink latency overhead in scheduled CI.
 
 Deliver:
 

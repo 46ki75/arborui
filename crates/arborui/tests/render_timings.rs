@@ -36,6 +36,8 @@ fn facade_exposes_opt_in_render_timings() -> Result<(), Box<dyn std::error::Erro
     assert_eq!(timings.terminal_serialization_and_write, None);
     assert!(timings.commit.is_some());
     assert!(timings.post_commit.is_some());
+    assert_eq!(timings.repaint_regions, 1);
+    assert_eq!(timings.repaint_cells, size.area());
     assert_eq!(
         runner.render_headless_timed()?,
         TimedRender {

@@ -142,7 +142,7 @@ pub enum TerminalRenderOutcome {
     StateUnknown,
 }
 
-/// Durations recorded for one opt-in application render attempt.
+/// Timing and logical repaint work recorded for one opt-in render attempt.
 ///
 /// The selected phases do not necessarily sum exactly to [`Self::total`],
 /// which also includes orchestration and timing overhead.
@@ -160,6 +160,10 @@ pub struct RenderTimings {
     pub paint: Duration,
     /// Terminal-independent frame comparison and patch construction.
     pub diff: Duration,
+    /// Number of logical repaint regions cleared and replayed.
+    pub repaint_regions: usize,
+    /// Number of terminal cells covered by the logical repaint regions.
+    pub repaint_cells: u32,
     /// Backend validation, serialization, writer calls, and flush.
     ///
     /// This is `None` for headless rendering and empty patches.
@@ -887,6 +891,8 @@ fn render_timings(
         layout: preparation.layout,
         paint: preparation.paint,
         diff: preparation.diff,
+        repaint_regions: preparation.repaint_regions,
+        repaint_cells: preparation.repaint_cells,
         terminal_serialization_and_write,
         commit,
         post_commit,

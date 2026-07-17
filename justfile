@@ -56,6 +56,9 @@ focus-queue-ingress-metrics:
 focus-queue-slow-sink-metrics:
     cargo test --release -p arborui-example-focus-queue --test slow_sink_metrics --all-features -- --ignored --nocapture
 
+collection-lab-damage-metrics:
+    cargo test --release -p arborui-example-collection-lab --test damage_metrics --all-features -- --ignored --nocapture
+
 comparison-check:
     CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 fmt --manifest-path comparisons/collection-lab-ratatui/Cargo.toml -- --check
     CARGO_TARGET_DIR="{{justfile_directory()}}/target/comparisons/collection-lab-ratatui" cargo +1.88.0 clippy --manifest-path comparisons/collection-lab-ratatui/Cargo.toml --all-targets --locked -- -D warnings

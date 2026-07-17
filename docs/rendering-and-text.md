@@ -199,12 +199,14 @@ commit or invalidate
 The renderer normally performs complete painting and a complete buffer scan. UI
 preparation may reuse committed whole-frame geometry when reconciliation proves
 that no layout-affecting change occurred. For paint-only work against the exact
-committed renderer generation, it clones committed logical state, clears one
-full-width band covering the invalid rows, and replays intersecting painters in
-normal order. Full-width damage avoids cutting old or new wide grapheme spans;
-replaying every intersecting layer preserves overlap and hit-map ordering. Focus
-transitions mark both the previous and current focus nodes for paint because
-their focused styles can affect complete descendant content.
+committed renderer generation, it clones committed logical state, merges
+overlapping or adjacent invalid row spans, clears each resulting full-width
+region, and replays intersecting painters in normal order. Keeping each region
+full width avoids cutting old or new wide grapheme spans; replaying every
+intersecting layer preserves overlap and hit-map ordering. Clean rows between
+separated invalidations remain untouched. Focus transitions mark both the
+previous and current focus nodes for paint because their focused styles can
+affect complete descendant content.
 
 If reconciliation reports no change against that same generation, preparation
 reuses the clone without invoking paint callbacks. Renderer mismatch, resize,
@@ -213,6 +215,13 @@ always computes layout and paints from scratch to provide the reference output
 for optimized preparation. `Renderer::prepare_from_current` exposes the owned
 clone-and-repaint transaction primitive; callers must clear changed regions and
 replay every painter that can affect them.
+
+Opt-in `UiPreparationTimings` and application-level `RenderTimings` report
+`repaint_regions` and `repaint_cells`. Complete logical painting reports the
+viewport as one region, unchanged committed-frame reuse reports zero, and
+paint-only work reports the merged row regions actually cleared and replayed.
+These deterministic work counters complement scheduler-sensitive phase
+durations.
 
 ## Frame Patch
 

@@ -300,6 +300,33 @@ transitions must mark both previous and current focus nodes as damaged even
 after transition reporting consumes the event metadata; the retained
 invalidation now carries that dependency.
 
+The finer-grained damage slice adds deterministic repaint-region and repaint-cell
+counters to the opt-in timings. Its facade-only Collection Lab probe starts with
+row zero selected, batches active movement to visible row seven, then moves the
+selection to that row. The original contiguous band reported one region and 384
+cells for each turn; one initial optimized local sample spent 26.866 and 26.711
+microseconds painting and 50.793 and 47.694 microseconds on the complete render.
+Those two separated invalid rows select a narrower vertical strategy without
+selecting horizontal clipping: merging only overlapping or adjacent row spans
+preserves full-width wide-grapheme safety and leaves two regions totaling 96
+cells, a deterministic 75% area reduction.
+
+An optimized 100-sample run on 2026-07-17 reported:
+
+| Scenario | Repaint regions | Repaint cells | Paint average | Render average |
+| --- | ---: | ---: | ---: | ---: |
+| Active-row move | 2 | 96 | 11.030 us | 30.743 us |
+| Selection move | 2 | 96 | 10.652 us | 28.774 us |
+
+The before timing samples and optimized averages are observational rather than a
+formal paired benchmark; the deterministic area change is the selection signal.
+The existing matched fixed/variable selection phase probe remained healthy at
+11.515 and 16.507 microseconds of paint in the same optimized validation run.
+Focused callback counts prove that clean intervening rows are skipped, and the
+incremental/full-reference oracle compares complete buffers, patches, hit maps,
+retained geometry, and committed renderer state across separated style changes
+including wide content.
+
 The next cross-workload slice adds a facade-only virtualized service table. A
 shared application model owns fixed-height range construction, responsive column
 widths, stable active and selected keys, Unicode region data, and deterministic
@@ -483,6 +510,7 @@ INSTA_UPDATE=no cargo test -p arborui-example-focus-queue --all-features
 just focus-queue-ingress-metrics
 just focus-queue-slow-sink-metrics
 INSTA_UPDATE=no cargo test -p arborui-example-collection-lab --all-features
+just collection-lab-damage-metrics
 cargo bench -p arborui-example-collection-lab --bench visible_ranges -- --noplot
 just comparison-memory-metrics
 just comparison-phase-metrics
@@ -581,7 +609,7 @@ requirements open:
 
 The measured incremental path now reuses retained whole-frame geometry when no
 layout-affecting change occurred, committed logical content when no change at all
-occurred, and a conservative damaged-row band for paint-only work. The table
+occurred, and merged full-width damaged-row regions for paint-only work. The table
 slice broadens evidence to responsive columns, Unicode cells, resize, and
 deterministic background updates without stabilizing a widget API. The bounded
 scrolling-log slice adds chronological history, follow-tail behavior, paused
@@ -598,5 +626,5 @@ measured burst. Slow-sink evidence establishes that imposed synchronous flush
 delay transfers directly into input-to-write completion while pressure remains
 bounded and observable. Neither slice selects another local renderer
 optimization. Tracked output and slow-sink regression limits now run in
-scheduled CI. Finer-grained incremental work remains open; select and reusable
-table requirements can extend the pilot separately.
+scheduled CI. The finer-grained damage slice closes Milestone 12; select and
+reusable table requirements can extend the pilot separately.

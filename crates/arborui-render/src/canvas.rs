@@ -65,6 +65,13 @@ pub struct Canvas<'a> {
     width_policy: WidthPolicy,
     hit_map: Option<&'a mut HitMap>,
     hit: Option<HitId>,
+    damage_rows: Option<RowMask<'a>>,
+}
+
+#[derive(Clone, Copy)]
+struct RowMask<'a> {
+    rows: &'a [bool],
+    parent: Option<&'a RowMask<'a>>,
 }
 
 impl<'a> Canvas<'a> {
@@ -83,6 +90,7 @@ impl<'a> Canvas<'a> {
             width_policy,
             hit_map: None,
             hit: None,
+            damage_rows: None,
         }
     }
 
@@ -146,6 +154,28 @@ impl<'a> Canvas<'a> {
             width_policy: self.width_policy,
             hit_map: self.hit_map.as_deref_mut(),
             hit: self.hit,
+            damage_rows: self.damage_rows,
+        }
+    }
+
+    /// Filters writes to selected complete buffer rows.
+    ///
+    /// The ordinary rectangular clip and local origin remain in effect. Each
+    /// entry corresponds to one row from the buffer origin; missing entries are
+    /// treated as unselected. Complete rows preserve wide-grapheme spans.
+    pub fn with_damage_rows<'b>(&'b mut self, rows: &'b [bool]) -> Canvas<'b> {
+        Canvas {
+            buffer: &mut *self.buffer,
+            store: &mut *self.store,
+            clip: self.clip,
+            origin: self.origin,
+            width_policy: self.width_policy,
+            hit_map: self.hit_map.as_deref_mut(),
+            hit: self.hit,
+            damage_rows: Some(RowMask {
+                rows,
+                parent: self.damage_rows.as_ref(),
+            }),
         }
     }
 
@@ -168,7 +198,10 @@ impl<'a> Canvas<'a> {
         let width =
             u16::try_from(grapheme.width).map_err(|_| DrawError::WidthExceeded(grapheme.width))?;
         let point = self.origin.translated(point.x, point.y);
-        if !span_fits(point, width, self.clip) || !span_fits(point, width, self.buffer.bounds()) {
+        if !span_fits(point, width, self.clip)
+            || !span_fits(point, width, self.buffer.bounds())
+            || !self.row_is_selected(point.y)
+        {
             return Ok(false);
         }
 
@@ -230,8 +263,15 @@ impl<'a> Canvas<'a> {
             return Ok(0);
         };
 
+        self.fill_rect(rect, style)
+    }
+
+    fn fill_rect(&mut self, rect: Rect, style: Style) -> Result<usize, DrawError> {
         let mut written = 0;
         for y in rect.y..rect.bottom() {
+            if !self.row_is_selected(y) {
+                continue;
+            }
             for x in rect.x..rect.right() {
                 let point = Point::new(x, y);
                 self.clear_hit_span_at(point);
@@ -241,6 +281,20 @@ impl<'a> Canvas<'a> {
             }
         }
         Ok(written)
+    }
+
+    fn row_is_selected(&self, y: i32) -> bool {
+        let Some(y) = usize::try_from(y).ok() else {
+            return false;
+        };
+        let mut mask = self.damage_rows.as_ref();
+        while let Some(current) = mask {
+            if !current.rows.get(y).copied().unwrap_or(false) {
+                return false;
+            }
+            mask = current.parent;
+        }
+        true
     }
 
     fn mark_hit_span(&mut self, point: Point, width: u16) {
@@ -336,6 +390,52 @@ mod tests {
                 .map(|cell| cell.style.background),
             Some(Some(Color::Blue))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn damage_rows_filter_fills_and_complete_graphemes() -> Result<(), DrawError> {
+        let mut buffer = Buffer::new(Size::new(4, 3));
+        let mut store = GraphemeStore::new();
+        {
+            let mut canvas = Canvas::new(&mut buffer, &mut store, WidthPolicy::Unicode);
+            let rows = [true, false, true];
+            let mut damaged = canvas.with_damage_rows(&rows);
+
+            assert_eq!(
+                damaged.fill(Rect::new(0, 0, 4, 3), Style::new().background(Color::Blue))?,
+                8
+            );
+            assert!(!damaged.draw_grapheme(Point::new(0, 1), "界", Style::default(), None)?);
+            assert!(damaged.draw_grapheme(Point::new(0, 2), "界", Style::default(), None)?);
+        }
+
+        assert!((0..4).all(|x| buffer.get(Point::new(x, 1)) == Some(&Cell::default())));
+        assert!(matches!(
+            buffer.get(Point::new(0, 2)).map(|cell| cell.content),
+            Some(CellContent::Grapheme { width: 2, .. })
+        ));
+        Ok(())
+    }
+
+    #[test]
+    fn nested_damage_rows_cannot_broaden_parent_selection() -> Result<(), DrawError> {
+        let mut buffer = Buffer::new(Size::new(2, 2));
+        let mut store = GraphemeStore::new();
+        {
+            let mut canvas = Canvas::new(&mut buffer, &mut store, WidthPolicy::Unicode);
+            let outer_rows = [true, false];
+            let inner_rows = [true, true];
+            let mut outer = canvas.with_damage_rows(&outer_rows);
+            let mut inner = outer.with_damage_rows(&inner_rows);
+
+            assert_eq!(
+                inner.fill(Rect::new(0, 0, 2, 2), Style::new().background(Color::Blue))?,
+                2
+            );
+        }
+
+        assert!((0..2).all(|x| buffer.get(Point::new(x, 1)) == Some(&Cell::default())));
         Ok(())
     }
 }

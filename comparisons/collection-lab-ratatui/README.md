@@ -158,6 +158,11 @@ Criterion baseline. Reverse remained application dominated.
 Conservative damaged-row repaint subsequently reduced fixed and variable
 selection by 40.4% and 39.2% against the preceding documented point estimates;
 line navigation benefits from the same focus-node damage tracking.
+The later separated-row probe retains full-width grapheme safety but merges only
+overlapping or adjacent invalid row spans. Moving active and selected state
+between visible rows zero and seven reduces logical repaint coverage from one
+384-cell band to two regions totaling 96 cells. The existing fixed and variable
+selection phase cases remain single-region workloads.
 
 ## Table Workload Result
 
