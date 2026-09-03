@@ -8,8 +8,8 @@ use std::{
 use arborui_core::{CursorState, CursorVisibility, Point, Rect, Size, Style};
 use arborui_layout::{LayoutError, LayoutNodeId, LayoutTree};
 use arborui_render::{
-    Buffer, Canvas, CommitError, DrawError, FramePatch, HitId, HitMap, PreparedFrame, RenderError,
-    Renderer, RendererStateId,
+    Buffer, Canvas, CommitError, DrawError, FramePatch, HitId, HitMap, ImageScene, PreparedFrame,
+    RenderError, Renderer, RendererStateId,
 };
 use arborui_text::{WidthPolicy, measure};
 
@@ -249,6 +249,12 @@ impl PreparedUiFrame {
     #[must_use]
     pub const fn buffer(&self) -> &Buffer {
         self.frame.buffer()
+    }
+
+    /// Returns the complete prepared native-image scene.
+    #[must_use]
+    pub const fn images(&self) -> &ImageScene {
+        self.frame.images()
     }
 
     /// Returns the interactive map prepared with the frame.

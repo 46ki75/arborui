@@ -13,25 +13,41 @@ use crossterm::{
     terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
 };
 
+use crate::kitty::{self, PreparedUpdate};
+
+#[cfg(test)]
 pub(crate) fn write_patch<W: Write>(
     writer: &mut W,
     patch: &FramePatch,
     capabilities: &Capabilities,
 ) -> io::Result<()> {
+    write_patch_with_images(writer, patch, capabilities, None)
+}
+
+pub(crate) fn write_patch_with_images<W: Write>(
+    writer: &mut W,
+    patch: &FramePatch,
+    capabilities: &Capabilities,
+    images: Option<&PreparedUpdate<'_>>,
+) -> io::Result<()> {
     patch
         .validate_for_width_policy(capabilities.width_policy)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-    if patch.is_empty() {
+    if let Some(images) = images {
+        kitty::write_recovery(writer, images)?;
+    }
+    let has_image_output = images.is_some_and(PreparedUpdate::has_output);
+    if patch.runs.is_empty() && !patch.cursor_changed && !has_image_output {
         return Ok(());
     }
 
     if !capabilities.synchronized_updates {
-        write_patch_body(writer, patch, capabilities.color)?;
+        write_patch_body(writer, patch, capabilities.color, images)?;
         return writer.flush();
     }
 
     writer.queue(BeginSynchronizedUpdate)?;
-    let body_result = write_patch_body(writer, patch, capabilities.color);
+    let body_result = write_patch_body(writer, patch, capabilities.color, images);
     let end_result = writer.queue(EndSynchronizedUpdate).map(|_| ());
     let flush_result = writer.flush();
     body_result.and(end_result).and(flush_result)
@@ -41,7 +57,12 @@ fn write_patch_body<W: Write>(
     writer: &mut W,
     patch: &FramePatch,
     color_capability: ColorCapability,
+    images: Option<&PreparedUpdate<'_>>,
 ) -> io::Result<()> {
+    if let Some(images) = images {
+        kitty::write_update_prefix(writer, images)?;
+    }
+
     let mut active_style = None;
     for run in &patch.runs {
         for (offset, cell) in run.cells.iter().enumerate() {
@@ -63,7 +84,14 @@ fn write_patch_body<W: Write>(
         }
     }
 
-    if !patch.runs.is_empty() || patch.cursor_changed {
+    if let Some(images) = images {
+        kitty::write_update_content(writer, images)?;
+    }
+
+    if !patch.runs.is_empty()
+        || patch.cursor_changed
+        || images.is_some_and(PreparedUpdate::has_output)
+    {
         apply_cursor(writer, patch.cursor)?;
     }
     Ok(())

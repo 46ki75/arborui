@@ -49,6 +49,8 @@ pub struct Capabilities {
     pub focus_reporting: bool,
     /// Whether OSC 8 hyperlinks are supported.
     pub hyperlinks: bool,
+    /// Whether Kitty graphics with direct image transfer is supported.
+    pub kitty_graphics: bool,
     /// Whether explicit grapheme width sequences are supported.
     pub explicit_width: bool,
     /// Width policy selected for this terminal.
@@ -65,6 +67,7 @@ impl Default for Capabilities {
             bracketed_paste: true,
             focus_reporting: true,
             hyperlinks: false,
+            kitty_graphics: false,
             explicit_width: false,
             width_policy: WidthPolicy::Unicode,
         }

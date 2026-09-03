@@ -1,7 +1,7 @@
 use std::{fmt, sync::Arc};
 
 use arborui_core::{CursorState, Point, Size, Style};
-use arborui_render::{FramePatch, HyperlinkId, PatchCell, PatchCellContent};
+use arborui_render::{FramePatch, HyperlinkId, ImageScene, PatchCell, PatchCellContent};
 
 /// Resolved content of one cell in a committed test frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +53,7 @@ pub struct TestFrame {
     size: Size,
     cells: Vec<TestCell>,
     cursor: CursorState,
+    images: ImageScene,
 }
 
 impl TestFrame {
@@ -61,6 +62,7 @@ impl TestFrame {
             size,
             cells: vec![TestCell::default(); usize::from(size.width) * usize::from(size.height)],
             cursor: CursorState::default(),
+            images: ImageScene::new(),
         }
     }
 
@@ -88,6 +90,12 @@ impl TestFrame {
         self.cursor
     }
 
+    /// Returns the committed native-image scene.
+    #[must_use]
+    pub const fn images(&self) -> &ImageScene {
+        &self.images
+    }
+
     /// Returns the visual character snapshot represented by this frame.
     #[must_use]
     pub fn characters(&self) -> String {
@@ -99,6 +107,9 @@ impl TestFrame {
             *self = Self::new(patch.size);
         }
         self.cursor = patch.cursor;
+        if let Some(images) = &patch.images {
+            self.images.clone_from(images);
+        }
 
         for run in &patch.runs {
             for (offset, cell) in run.cells.iter().enumerate() {

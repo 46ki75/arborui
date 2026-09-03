@@ -92,6 +92,7 @@ pub struct Capabilities {
     pub focus_reporting: bool,
     pub hyperlinks: bool,
     pub clipboard: ClipboardCapability,
+    pub kitty_graphics: bool,
     pub explicit_width: bool,
     pub width_policy: WidthPolicy,
 }
@@ -175,6 +176,7 @@ Restoration covers:
 - Synchronized update mode
 - Autowrap changes
 - Active text styles and hyperlinks
+- ArborUI-owned Kitty images before leaving the alternate screen
 
 `Drop` performs best-effort restoration. Explicit `restore` returns errors and
 is preferred during orderly shutdown.
@@ -226,6 +228,46 @@ graphemes may require cursor repositioning according to capabilities.
 
 Absolute cursor placement is preferred for independently changed runs because
 it limits propagation from an incorrect cursor-advance assumption.
+
+## Kitty Graphics
+
+The Crossterm backend uses `KittyGraphicsMode` to configure graphics before a
+session starts:
+
+- `Auto` uses conservative environment hints and is disabled under SSH, mosh,
+  tmux, GNU Screen, and Zellij. Multiplexer-style `TERM` values are also
+  rejected when explicit environment markers have been stripped.
+- `Disabled` never emits Kitty graphics commands.
+- `Enabled` emits Kitty graphics commands without querying the terminal.
+
+There is no active graphics capability probe. In `Auto`, direct Kitty, Ghostty,
+WezTerm, and VS Code environment hints can enable the feature only when no excluded
+remote or multiplexer environment is present.
+
+Kitty output is emitted only on the alternate screen. The backend sends decoded
+RGBA pixels with Kitty direct transfer (`t=d`, `f=32`), suppresses protocol
+responses with `q=2`, limits each base64-encoded payload chunk to 4096 bytes,
+and places images with `C=1`. Placement z-indexes preserve scene order above
+fallback cells. The backend uses Kitty image numbers, which are intended for
+clients that cannot synchronously obtain globally unique image IDs. Whole-scene
+updates delete the backend's prior ArborUI-owned image numbers before uploading
+and placing the desired scene. Kitty preserves aspect ratio and letterboxes or
+pillarboxes when necessary. After an uncertain write, ST terminates any partial
+APC, synchronized-update mode is explicitly ended, and image deletions abort an
+incomplete chunked upload before repaint cells are emitted. If a failed cleanup
+makes the active screen ambiguous, the backend re-enters the alternate screen
+before targeted deletion and then leaves it again, avoiding deletion of a
+main-screen image owned by another client.
+
+Kitty 0.48 rejects source dimensions above 10,000 pixels per axis. The
+Crossterm backend leaves those sources fallback-only rather than suppressing a
+protocol failure and claiming native output succeeded.
+
+The backend does not provide PNG passthrough, filesystem or shared-memory
+transport, animation, tmux placeholders, or main-screen images. Ordinary cell
+fallback content remains visible when graphics are disabled or unavailable.
+Restoration, suspension, and an alternate-to-main transition delete owned
+images before leaving the alternate screen.
 
 ## Suspend And Resume
 

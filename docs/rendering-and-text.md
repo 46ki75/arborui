@@ -3,8 +3,9 @@
 ## Scope
 
 This document defines the contracts between `arborui-text`, `arborui-render`, and
-the terminal backend. The primary concern is correctness for Unicode text and
-terminal cells before performance optimizations are introduced.
+the terminal backend. The primary concern is correctness for Unicode text,
+terminal cells, and backend-neutral native-image state before performance
+optimizations are introduced.
 
 ## Text Model
 
@@ -151,6 +152,30 @@ Initial drawing operations include:
 Drawing outside the clip is a no-op. Invalid geometry returns an error only
 when it indicates an API misuse rather than ordinary clipping.
 
+## Native Images
+
+`RgbaImage` stores immutable, decoded, row-major 8-bit sRGB RGBA pixels.
+Construction rejects zero dimensions, size arithmetic overflow, payloads whose
+length is not exactly `width * height * 4`, and decoded payloads larger than 64
+MiB per image. A renderer-created scene is also limited to 4096 placements and
+256 MiB of unique decoded sources; exceeding either scene limit returns a
+`DrawError`. Clones share the immutable pixels and image identity.
+
+Applications must decode PNG and rasterize SVG or other encoded sources before
+constructing an `RgbaImage`. The renderer does not pass PNG data through to a
+terminal or perform application image decoding.
+
+The `Image` widget requires explicit width and height in terminal cells. It
+paints `[image]` into the ordinary cell buffer by default, then records the
+native placement separately, so backends without native-image support retain a
+cell fallback. Overlapping image placements follow paint order, so later
+placements appear above earlier placements, while native placements remain
+above fallback cells. Order between disjoint retained placements is not
+semantic and can differ after selective repaint. Partially clipped placements
+remain fallback-only because Kitty preserves image aspect ratio within its cell
+rectangle and the backend-neutral renderer does not know terminal cell pixel
+dimensions needed for an exact source crop.
+
 ## Surfaces And Composition
 
 A surface is an independently painted region with placement and clipping:
@@ -179,15 +204,15 @@ consistently.
 ## Frame Pipeline
 
 ```text
-clear next frame
+clear next cell frame and image scene
       |
-paint root surfaces
+paint fallback cells and image placements
       |
 compose overlays and hit map
       |
 validate wide-cell invariants
       |
-compare committed and next frames
+compare committed and next cell and image state
       |
 produce FramePatch
       |
@@ -237,8 +262,16 @@ pub struct FramePatch {
     pub runs: Vec<CellRun>,
     pub cursor: CursorState,
     pub full_repaint: bool,
+    pub images: Option<ImageScene>,
 }
 ```
+
+Image changes are whole-scene replacements rather than incremental placement
+operations. On an incremental patch, `images: None` leaves backend image state
+unchanged, while `images: Some(scene)` replaces it completely; an empty scene
+clears all ArborUI-owned images. A full repaint resets image state and includes
+the complete desired scene, including an empty scene, allowing recovery to
+retransmit or clear native images.
 
 Wide grapheme spans are atomic within a `CellRun`. A `Grapheme` of width `n`
 is immediately followed by `n - 1` `Continuation` cells in that same run. The
@@ -249,7 +282,8 @@ emit the leading grapheme once and skip those covered continuation cells.
 `FramePatch::validate` checks this contract and run geometry for manually
 constructed patches. Runs are globally row-major and non-overlapping. A full
 repaint of a nonempty frame has exact coverage: one complete run for each row.
-A zero-area full repaint needs no runs and remains an empty patch.
+A zero-area full repaint needs no runs but still carries an empty image scene so
+a backend can clear graphics after uncertain output.
 
 Renderer-generated patches are always valid, expanding a changed range to
 include a complete wide span when necessary. Structural validation deliberately
@@ -286,18 +320,17 @@ let prepared = renderer.prepare(viewport, |canvas| {
 })?;
 
 match backend.write_patch(prepared.patch())? {
-    WriteOutcome::Applied => renderer.commit(prepared),
+    WriteOutcome::Applied => renderer.commit(prepared)?,
     WriteOutcome::Deferred => renderer.discard(prepared),
-    WriteOutcome::StateUnknown => {
-        renderer.discard(prepared);
-        renderer.force_full_repaint();
-    }
+    WriteOutcome::StateUnknown => renderer.discard_uncertain(prepared),
 }
 ```
 
-The committed buffer models what is believed to be physically visible. It is
-updated only after complete output. Resume, resize, external output, or a
-partial write invalidates that belief and forces a full repaint.
+The renderer's committed buffer and `ImageScene` model what is believed to be
+physically visible. `PreparedFrame` owns both next states, and neither is
+committed until complete output is accepted. Resume, resize, external output,
+or a partial write invalidates that belief and forces a full repaint of cells
+and image state.
 
 ## Optimization Sequence
 

@@ -22,8 +22,6 @@ workspace = true
 [dependencies]
 arborui-core = { workspace = true }
 arborui-layout = { workspace = true }
+arborui-render = { workspace = true }
 arborui-text = { workspace = true }
 arborui-ui = { workspace = true }
-
-[dev-dependencies]
-arborui-render = { workspace = true }

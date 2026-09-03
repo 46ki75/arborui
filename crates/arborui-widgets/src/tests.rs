@@ -2,14 +2,14 @@ use std::error::Error;
 
 use arborui_core::{Color, CursorVisibility, Modifier, Point, Size, Style};
 use arborui_layout::{Dimension, LayoutStyle};
-use arborui_render::{FramePatch, PatchCellContent, Renderer};
+use arborui_render::{FramePatch, PatchCellContent, Renderer, RgbaImage};
 use arborui_text::{TextBuffer, TextEdit, TextMovement, WidthPolicy};
 use arborui_ui::{
     Element, Key, KeyAction, KeyModifiers, PointerButton, PointerEvent, PointerEventKind, UiEvent,
     UiKey, UiKeyEvent, UiTree,
 };
 
-use crate::{Block, Button, Checkbox, Dialog, ScrollView, TextInput, stack};
+use crate::{Block, Button, Checkbox, Dialog, Image, ScrollView, TextInput, stack};
 
 fn prepare_and_commit<Message>(
     tree: &mut UiTree,
@@ -107,6 +107,42 @@ fn stack_preserves_sizes_and_paints_later_children_last() -> Result<(), Box<dyn 
             Size::new(1, 1)
         );
     }
+    Ok(())
+}
+
+#[test]
+fn image_paints_fallback_cells_and_native_placement() -> Result<(), Box<dyn Error>> {
+    let source = RgbaImage::new(4, 2, vec![255; 4 * 2 * 4])?;
+    let view = Image::new(&source, 2, 1)
+        .fallback("alt")
+        .build::<()>()
+        .style(Style::default().foreground(Color::Red));
+    let tree = UiTree::new();
+    let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+
+    let prepared = tree.prepare(&view, Size::new(2, 1), &mut renderer)?;
+
+    assert_eq!(patch_grapheme(prepared.patch(), Point::ORIGIN), Some("a"));
+    assert_eq!(
+        patch_grapheme(prepared.patch(), Point::new(1, 0)),
+        Some("l")
+    );
+    assert_eq!(
+        prepared
+            .buffer()
+            .get(Point::ORIGIN)
+            .ok_or("missing fallback cell")?
+            .style
+            .foreground,
+        Some(Color::Red)
+    );
+    let placement = prepared
+        .images()
+        .placements()
+        .first()
+        .ok_or("missing native image placement")?;
+    assert_eq!(placement.image().id(), source.id());
+    assert_eq!(placement.destination(), arborui_core::Rect::new(0, 0, 2, 1));
     Ok(())
 }
 

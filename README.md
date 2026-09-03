@@ -17,8 +17,12 @@ adds serialized model updates, opaque commands, external event proxies,
 runtime-neutral futures, idle-aware rendering, and transactional terminal
 orchestration. Standard controlled widgets include flex composition, blocks,
 buttons, stacks, lists, scrolling, and grapheme-aware text input. The public
-`arborui-test` harness drives complete applications with deterministic time,
-headless input, frame snapshots, and simulated output failures.
+API also provides validated backend-neutral decoded RGBA images, transactional
+image scenes, and an explicit-cell-size image widget with a text fallback. The
+Crossterm backend offers configured-first Kitty direct graphics on the
+alternate screen. The public `arborui-test` harness drives complete applications
+with deterministic time, headless input, frame snapshots, image-scene
+inspection, and simulated output failures.
 
 ## Features
 
@@ -57,6 +61,12 @@ See `examples/counter` for the smallest complete facade-only application. The
 `examples/focus-queue` pilot exercises controlled text input, keyed dynamic
 rows, focus traversal, mouse scrolling, styling, deterministic commands, and
 orderly shutdown through the same public boundary.
+
+The `examples/kitty-image` application generates RGBA test patterns without
+external assets and exercises native image replacement, layering, movement,
+cleanup, clipping, and fallback behavior. Launch it in a directly connected
+Kitty-compatible terminal with `just run-kitty-image`; see the example README
+for forced-enabled and forced-disabled commands.
 
 Launch the pilot in a terminal with:
 

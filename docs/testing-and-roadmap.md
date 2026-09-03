@@ -38,6 +38,9 @@ Each crate owns tests for its contracts.
 - Hit-map clipping
 - Empty frame output
 - Full repaint generation
+- RGBA dimension, payload-length, overflow, 64 MiB source, 256 MiB scene, and
+  4096-placement limit validation
+- Whole-scene image replacement, clipping, commit, discard, and repaint recovery
 
 ### `arborui-layout`
 
@@ -71,6 +74,15 @@ Each crate owns tests for its contracts.
 - Capability responses
 - Output outcome handling
 - Suspend and resume ordering
+
+### `arborui-backend-crossterm`
+
+- Configured Kitty mode and conservative environment detection
+- Direct RGBA transfer framing, image-number addressing, ordered z-indexes, and
+  4096-byte encoded chunk limits
+- Alternate-screen-only image output and cleanup-before-exit ordering
+- Partial-control-sequence recovery, interrupted-upload cleanup, and whole-scene
+  replacement
 
 ## Property And Fuzz Tests
 
@@ -140,6 +152,7 @@ The harness supports:
 - Command completion
 - Waiting until visual idle
 - Focus and hit-map inspection
+- Committed image-scene inspection
 - Simulated backpressure and output failure
 
 Snapshots are a supplement to structural assertions, not a replacement for
@@ -162,7 +175,8 @@ Use the narrowest representation that covers the contract:
 - Frame-patch snapshots are reserved for renderer transactions and performance
   contracts.
 - Structural assertions cover model state, focus identity, hit testing, cursor
-  coordinates, and event behavior.
+  coordinates, image placements, and event behavior. Character snapshots cover
+  an image widget's cell fallback, not terminal-rendered pixels.
 
 Each application or substantial widget should normally have one initial-state
 snapshot, one for each materially distinct visual state, and a relevant
@@ -217,7 +231,8 @@ larger scheduled compatibility matrix are acceptable.
 The gating matrix runs the process-isolated Crossterm lifecycle test on Linux
 PTY, macOS PTY, and Windows ConPTY. Linux additionally verifies exact termios
 restoration. Emulator semantics, tmux, Unix job-control signals, and termination
-signals remain explicit stabilization follow-ups.
+signals remain explicit stabilization follow-ups. A PTY can verify emitted
+Kitty commands and cleanup ordering, but cannot validate rendered image pixels.
 
 ## Benchmarks
 
@@ -292,6 +307,7 @@ Deliver:
 - Cell and buffer
 - Canvas and surfaces
 - Frame diff and prepared-frame transaction
+- Validated decoded RGBA images and transactional image scenes
 - Headless render tests
 
 Exit criterion: arbitrary frames can be painted, diffed, replayed, and verified
@@ -313,6 +329,8 @@ Deliver:
 - Alternate-screen mode
 - Cursor management
 - Suspend and resume
+- Configured-first Kitty direct RGBA graphics on the alternate screen
+- Kitty image cleanup before alternate-screen exit
 
 Exit criterion: a basic fullscreen renderer restores the terminal after normal
 exit, application error, panic, resize, and suspension.
@@ -365,6 +383,7 @@ Deliver:
 - Scheduler
 - Standard widget set
 - Controlled text input
+- Explicit-cell-size image widget with `[image]` fallback
 
 Exit criterion: applications remain idle without rendering, integrate with
 external async work, and can be fully tested headlessly.

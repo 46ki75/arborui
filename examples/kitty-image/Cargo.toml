@@ -1,0 +1,17 @@
+[package]
+name = "arborui-example-kitty-image"
+description = "Manual Kitty graphics exercise using the public arborui API"
+publish = false
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+arborui = { workspace = true }
+
+[dev-dependencies]
+arborui-test = { workspace = true }

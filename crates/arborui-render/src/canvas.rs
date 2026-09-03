@@ -4,7 +4,8 @@ use arborui_core::{Point, Rect, Style};
 use arborui_text::{WidthPolicy, graphemes};
 
 use crate::{
-    Buffer, BufferError, CellContent, GraphemeStore, GraphemeStoreError, HitId, HitMap, HyperlinkId,
+    Buffer, BufferError, CellContent, GraphemeStore, GraphemeStoreError, HitId, HitMap,
+    HyperlinkId, ImagePlacement, ImageScene, RgbaImage,
 };
 
 /// Errors produced by high-level drawing operations.
@@ -18,6 +19,10 @@ pub enum DrawError {
     GraphemeStore(GraphemeStoreError),
     /// An invariant-preserving buffer write failed.
     Buffer(BufferError),
+    /// Native image drawing was requested without a frame image scene.
+    ImageSceneUnavailable,
+    /// A renderer-created image scene exceeded a safety limit.
+    ImageScene(crate::ImageSceneError),
 }
 
 impl fmt::Display for DrawError {
@@ -29,6 +34,8 @@ impl fmt::Display for DrawError {
             }
             Self::GraphemeStore(error) => error.fmt(formatter),
             Self::Buffer(error) => error.fmt(formatter),
+            Self::ImageSceneUnavailable => formatter.write_str("canvas has no native image scene"),
+            Self::ImageScene(error) => error.fmt(formatter),
         }
     }
 }
@@ -44,6 +51,12 @@ impl From<GraphemeStoreError> for DrawError {
 impl From<BufferError> for DrawError {
     fn from(error: BufferError) -> Self {
         Self::Buffer(error)
+    }
+}
+
+impl From<crate::ImageSceneError> for DrawError {
+    fn from(error: crate::ImageSceneError) -> Self {
+        Self::ImageScene(error)
     }
 }
 
@@ -66,6 +79,7 @@ pub struct Canvas<'a> {
     hit_map: Option<&'a mut HitMap>,
     hit: Option<HitId>,
     damage_rows: Option<RowMask<'a>>,
+    images: Option<&'a mut ImageScene>,
 }
 
 #[derive(Clone, Copy)]
@@ -91,6 +105,7 @@ impl<'a> Canvas<'a> {
             hit_map: None,
             hit: None,
             damage_rows: None,
+            images: None,
         }
     }
 
@@ -98,10 +113,12 @@ impl<'a> Canvas<'a> {
         buffer: &'a mut Buffer,
         store: &'a mut GraphemeStore,
         hit_map: &'a mut HitMap,
+        images: &'a mut ImageScene,
         width_policy: WidthPolicy,
     ) -> Self {
         let mut canvas = Self::new(buffer, store, width_policy);
         canvas.hit_map = Some(hit_map);
+        canvas.images = Some(images);
         canvas
     }
 
@@ -155,6 +172,7 @@ impl<'a> Canvas<'a> {
             hit_map: self.hit_map.as_deref_mut(),
             hit: self.hit,
             damage_rows: self.damage_rows,
+            images: self.images.as_deref_mut(),
         }
     }
 
@@ -164,6 +182,16 @@ impl<'a> Canvas<'a> {
     /// entry corresponds to one row from the buffer origin; missing entries are
     /// treated as unselected. Complete rows preserve wide-grapheme spans.
     pub fn with_damage_rows<'b>(&'b mut self, rows: &'b [bool]) -> Canvas<'b> {
+        let selected_rows = rows
+            .iter()
+            .enumerate()
+            .map(|(y, selected)| {
+                *selected && i32::try_from(y).is_ok_and(|y| self.row_is_selected(y))
+            })
+            .collect::<Vec<_>>();
+        if let Some(images) = self.images.as_deref_mut() {
+            images.mark_damaged(&selected_rows, self.clip);
+        }
         Canvas {
             buffer: &mut *self.buffer,
             store: &mut *self.store,
@@ -176,7 +204,47 @@ impl<'a> Canvas<'a> {
                 rows,
                 parent: self.damage_rows.as_ref(),
             }),
+            images: self.images.as_deref_mut(),
         }
+    }
+
+    /// Draws an image into a terminal-cell rectangle.
+    ///
+    /// Fully visible native image data is recorded separately from the cell
+    /// buffer, allowing unsupported backends to retain ordinary cell fallback
+    /// content. A partially clipped image returns `false` and remains
+    /// fallback-only because an exact pixel crop requires terminal cell metrics.
+    pub fn draw_image(&mut self, rect: Rect, image: &RgbaImage) -> Result<bool, DrawError> {
+        let destination = rect.translated(self.origin.x, self.origin.y);
+        let Some(visible) = destination
+            .intersection(self.clip)
+            .and_then(|rect| rect.intersection(self.buffer.bounds()))
+        else {
+            return Ok(false);
+        };
+        if !(visible.y..visible.bottom()).any(|y| self.row_is_selected(y)) {
+            return Ok(false);
+        }
+        let Some(placement) = ImagePlacement::clipped(image.clone(), destination, visible) else {
+            return Ok(false);
+        };
+
+        let Some(images) = self.images.as_deref_mut() else {
+            return Err(DrawError::ImageSceneUnavailable);
+        };
+        images.push(placement)?;
+
+        for y in visible.y..visible.bottom() {
+            if !self.row_is_selected(y) {
+                continue;
+            }
+            for x in visible.x..visible.right() {
+                if let Some(map) = self.hit_map.as_deref_mut() {
+                    let _ = map.set_option(Point::new(x, y), self.hit);
+                }
+            }
+        }
+        Ok(true)
     }
 
     /// Draws exactly one grapheme, returning whether it was fully visible.
@@ -390,6 +458,40 @@ mod tests {
                 .map(|cell| cell.style.background),
             Some(Some(Color::Blue))
         );
+        Ok(())
+    }
+
+    #[test]
+    fn rejected_image_does_not_change_hit_ownership() -> Result<(), Box<dyn std::error::Error>> {
+        let existing = RgbaImage::new(1, 1, vec![0; 4])?;
+        let replacement = RgbaImage::new(1, 1, vec![1; 4])?;
+        let mut scene = ImageScene::from_placements(
+            (0..crate::MAX_IMAGE_PLACEMENTS)
+                .map(|_| ImagePlacement::new(existing.clone(), Rect::new(0, 0, 1, 1))),
+        );
+        let mut buffer = Buffer::new(Size::new(1, 1));
+        let mut store = GraphemeStore::new();
+        let mut hit_map = HitMap::new(Size::new(1, 1));
+        let _ = hit_map.set(Point::ORIGIN, HitId::new(1));
+
+        let error = Canvas::with_hit_map(
+            &mut buffer,
+            &mut store,
+            &mut hit_map,
+            &mut scene,
+            WidthPolicy::Unicode,
+        )
+        .with_hit(Some(HitId::new(2)))
+        .draw_image(Rect::new(0, 0, 1, 1), &replacement)
+        .expect_err("the placement limit must reject another image");
+
+        assert_eq!(
+            error,
+            DrawError::ImageScene(crate::ImageSceneError::TooManyPlacements {
+                maximum: crate::MAX_IMAGE_PLACEMENTS,
+            })
+        );
+        assert_eq!(hit_map.get(Point::ORIGIN), Some(HitId::new(1)));
         Ok(())
     }
 

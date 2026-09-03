@@ -22,7 +22,7 @@ API details change.
 - A CSS selector or cascading style engine
 - React-compatible hooks or reconciliation semantics
 - Foreign-language bindings
-- GPU, image, or sixel rendering
+- GPU or sixel rendering
 - Multiple layout engines
 - Dirty-region painting in the first renderer
 - A rich text editor in the first release
@@ -43,7 +43,7 @@ collapsed into one object graph:
 | Component identity | UI tree |
 | Focus and interaction metadata | UI tree and focus manager |
 | Layout nodes and computed geometry | Layout engine |
-| Current and next visual cells | Renderer |
+| Current and next visual cells and image scenes | Renderer |
 | Terminal capabilities and active modes | Terminal session |
 | Async work | Runtime command scheduler |
 
@@ -79,8 +79,9 @@ The exact signatures may change, but these properties are required:
 
 ### Keep Backends Out Of Public UI Types
 
-No Crossterm, Termwiz, Taffy, or Tokio type appears in the core UI API. Adapter
-crates translate library-owned types at subsystem boundaries.
+No Crossterm, Termwiz, Taffy, or Tokio type appears in the core UI API. Decoded
+`RgbaImage` data and `ImageScene` placement are backend-neutral; adapter crates
+translate library-owned types at subsystem boundaries.
 
 ### Prefer Correct Full Work Before Incorrect Incremental Work
 
@@ -109,7 +110,7 @@ terminal event or completed command
         paint and composition
                 |
                 v
-      grapheme-aware next buffer
+  grapheme-aware buffer and image scene
                 |
                 v
         frame patch generation
@@ -175,9 +176,11 @@ allows convenient message values without unsafe lifetime extension.
 
 ### Renderer Transaction
 
-The renderer owns the committed visual frame. Preparing a patch does not
-modify that frame. The frame is committed only after the backend reports that
-the complete patch was accepted.
+The renderer owns the committed cell buffer and `ImageScene`. A `PreparedFrame`
+retains the complete next cell and image state; its `FramePatch` carries changed
+cell runs and, when required, a whole-scene image replacement. Preparing a patch
+does not modify committed state. The frame is committed only after the backend
+reports that the complete patch was accepted.
 
 ```text
 prepare next frame
@@ -192,7 +195,8 @@ commit next frame
 ```
 
 If output may have been partially applied, the next successful write must be a
-full repaint.
+full repaint. This also resets backend image state and retransmits the complete
+desired image scene, including an empty scene when graphics must be cleared.
 
 ## Invalidation
 

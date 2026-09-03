@@ -1,6 +1,8 @@
 use std::{num::NonZeroUsize, time::Duration};
 
-use arborui_core::Size;
+use arborui_core::{Rect, Size};
+use arborui_layout::{Dimension, LayoutStyle};
+use arborui_render::RgbaImage;
 use arborui_runtime::{Application, Command, UpdateContext};
 use arborui_ui::{
     Element, EventPhase, Invalidation, KeyModifiers as UiKeyModifiers, PointerEvent,
@@ -81,6 +83,54 @@ mod arborui_widgets_for_test {
             ..arborui_layout::LayoutStyle::default()
         })
     }
+}
+
+struct ImageApp {
+    image: RgbaImage,
+}
+
+impl Application for ImageApp {
+    type Message = RgbaImage;
+
+    fn update(
+        &mut self,
+        message: Self::Message,
+        context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message> {
+        self.image = message;
+        context.invalidate(Invalidation::Paint);
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        Element::custom("image", [])
+            .layout(LayoutStyle::new().size(Dimension::cells(2), Dimension::cells(1)))
+            .paint(self.image.id().get(), |size, canvas| {
+                canvas.draw_image(Rect::new(0, 0, size.width, size.height), &self.image)?;
+                Ok(())
+            })
+    }
+}
+
+#[test]
+fn test_frame_retains_native_image_scene() -> Result<(), Box<dyn std::error::Error>> {
+    let image = RgbaImage::new(2, 1, vec![255; 8])?;
+    let id = image.id();
+    let mut app = TestApp::new(ImageApp { image }, Size::new(2, 1));
+
+    assert_eq!(app.frame().images().placements().len(), 1);
+    assert_eq!(app.frame().images().placements()[0].image().id(), id);
+    let replacement = RgbaImage::new(2, 1, vec![0; 8])?;
+    let replacement_id = replacement.id();
+    app.send(replacement);
+    let patch = app.last_frame_patch().ok_or("missing image update patch")?;
+    assert!(patch.runs.is_empty());
+    assert!(patch.images.is_some());
+    assert_eq!(
+        app.frame().images().placements()[0].image().id(),
+        replacement_id
+    );
+    Ok(())
 }
 
 struct MissedInvalidationApp {

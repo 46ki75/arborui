@@ -25,14 +25,16 @@ pub use arborui_ui as ui;
 pub use arborui_widgets as widgets;
 
 #[cfg(feature = "crossterm")]
-pub use arborui_backend_crossterm::CrosstermBackend;
+pub use arborui_backend_crossterm::{CrosstermBackend, KittyGraphicsMode};
 
 pub use arborui_core::{
     Color, CursorShape, CursorState, CursorVisibility, Insets, Modifier, Point, Rect, Size, Style,
 };
 pub use arborui_layout::{Dimension, LayoutStyle, Position};
 pub use arborui_render::{
-    Buffer, Canvas, CommitError, FramePatch, HitId, HitMap, PreparedFrame, Renderer,
+    Buffer, Canvas, CommitError, FramePatch, HitId, HitMap, ImageError, ImageId, ImagePlacement,
+    ImageScene, ImageSceneError, MAX_IMAGE_BYTES, MAX_IMAGE_PLACEMENTS, MAX_IMAGE_SCENE_BYTES,
+    PixelRect, PreparedFrame, Renderer, RgbaImage,
 };
 pub use arborui_runtime::{
     AppRunner, Application, Clock, Command, DispatchReport, EventIngressMetrics, EventProxy,
@@ -54,9 +56,9 @@ pub use arborui_ui::{
     PreparedUiFrame, UiCommitError, UiEvent, UiKey, UiKeyEvent, UiTree, WidgetKind,
 };
 pub use arborui_widgets::{
-    Block, BorderSet, Button, Checkbox, Dialog, ScrollView, TextInput, button, checkbox, column,
-    column_with_gap, dialog, flexible_spacer, list, list_with_gap, row, row_with_gap, scroll_view,
-    spacer, spacer_with_dimensions, stack, text_input,
+    Block, BorderSet, Button, Checkbox, Dialog, Image, ScrollView, TextInput, button, checkbox,
+    column, column_with_gap, dialog, flexible_spacer, image, list, list_with_gap, row,
+    row_with_gap, scroll_view, spacer, spacer_with_dimensions, stack, text_input,
 };
 
 /// Common application, layout, and widget APIs.
@@ -64,10 +66,10 @@ pub mod prelude {
     pub use crate::layout::{Align, FlexDirection, Justify, Position};
     pub use crate::widgets::text;
     pub use crate::{
-        Application, Block, Button, Checkbox, Color, Command, Dialog, Dimension, Element, Insets,
-        Invalidation, Key, LayoutStyle, Point, ScrollView, Size, Style, TextBuffer, TextInput,
-        UpdateContext, button, checkbox, column, column_with_gap, dialog, flexible_spacer, list,
-        list_with_gap, row, row_with_gap, scroll_view, spacer, spacer_with_dimensions, stack,
-        text_input,
+        Application, Block, Button, Checkbox, Color, Command, Dialog, Dimension, Element, Image,
+        Insets, Invalidation, Key, LayoutStyle, Point, RgbaImage, ScrollView, Size, Style,
+        TextBuffer, TextInput, UpdateContext, button, checkbox, column, column_with_gap, dialog,
+        flexible_spacer, image, list, list_with_gap, row, row_with_gap, scroll_view, spacer,
+        spacer_with_dimensions, stack, text_input,
     };
 }

@@ -5,6 +5,7 @@
 
 mod backend;
 mod events;
+mod kitty;
 mod output;
 
-pub use backend::CrosstermBackend;
+pub use backend::{CrosstermBackend, KittyGraphicsMode};

@@ -30,8 +30,9 @@ change before 1.0 and must be called out in release notes.
 The PTY matrix verifies normal RAII completion and ordered alternate-screen
 cleanup. Unix additionally compares termios before and after the session.
 ConPTY does not currently assert exact Windows console-mode equivalence. A PTY
-is a transport and does not model screen contents, autowrap, scrolling, or
-cursor rendering.
+is a transport and does not model screen contents, autowrap, scrolling, cursor
+rendering, or terminal-rendered image pixels. PTY tests can validate Kitty
+command bytes and cleanup ordering, but not the resulting pixels.
 
 ## Terminal Limitations
 
@@ -51,6 +52,15 @@ cursor rendering.
   synchronized updates, and explicit width behavior may require explicit
   capability configuration. Capabilities are static for a session and are not
   renegotiated after resume.
+- Kitty graphics use `KittyGraphicsMode::{Auto, Disabled, Enabled}`. `Auto` is
+  environment-based, performs no active probing, and is disabled under SSH,
+  mosh, tmux, GNU Screen, and Zellij.
+- The Crossterm backend supports Kitty direct 32-bit RGBA transfer only on the
+  alternate screen. It has no PNG passthrough, filesystem or shared-memory
+  transport, animation, tmux placeholders, or main-screen images. Sources above
+  10,000 pixels on either axis remain fallback-only for Kitty compatibility.
+- Applications must decode PNG and rasterize SVG before constructing the
+  backend-neutral RGBA image supplied to ArborUI.
 - The Crossterm backend does not currently resolve or emit OSC 8 hyperlinks and
   reports hyperlink support as disabled even when configured otherwise.
 - Unicode display depends on the selected `WidthPolicy` and the terminal's own

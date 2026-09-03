@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, HashSet, hash_map::Entry},
     fmt,
     sync::{
         Arc,
@@ -13,7 +13,8 @@ use arborui_text::{WidthPolicy, graphemes};
 
 use crate::{
     Buffer, BufferError, Canvas, Cell, CellContent, DrawError, GraphemeId, GraphemeStore,
-    GraphemeStoreError, HitMap, HyperlinkId,
+    GraphemeStoreError, HitMap, HyperlinkId, ImageScene, MAX_IMAGE_PLACEMENTS,
+    MAX_IMAGE_SCENE_BYTES,
 };
 
 /// Resolved content in a terminal-independent frame patch.
@@ -90,6 +91,12 @@ pub struct FramePatch {
     pub cursor_changed: bool,
     /// Whether this patch describes a complete repaint.
     pub full_repaint: bool,
+    /// Complete desired native-image scene when graphics changed or on a full repaint.
+    ///
+    /// On an incremental patch, `None` leaves backend graphics unchanged. An
+    /// empty scene removes all ArborUI-owned graphics. Renderer-generated full
+    /// repaints always provide a scene, including when it is empty.
+    pub images: Option<ImageScene>,
 }
 
 /// A violation of the public [`FramePatch`] cell-run contract.
@@ -184,6 +191,25 @@ pub enum FramePatchValidationError {
         /// Index of the cell containing the conflicting text.
         cell: usize,
     },
+    /// A native-image placement is empty, out of bounds, or has an invalid crop.
+    InvalidImagePlacement {
+        /// Index of the invalid placement.
+        placement: usize,
+    },
+    /// A scene contains more image placements than the renderer accepts.
+    TooManyImagePlacements {
+        /// Number of supplied placements.
+        placements: usize,
+        /// Maximum accepted placement count.
+        maximum: usize,
+    },
+    /// Unique decoded image sources in one scene exceed the safety limit.
+    ImageSceneTooLarge {
+        /// Total decoded source bytes.
+        bytes: usize,
+        /// Maximum accepted byte length.
+        maximum: usize,
+    },
 }
 
 impl fmt::Display for FramePatchValidationError {
@@ -246,6 +272,23 @@ impl fmt::Display for FramePatchValidationError {
                 "frame patch run {run} cell {cell} maps grapheme id {} to different text than run {first_run} cell {first_cell}",
                 id.get()
             ),
+            Self::InvalidImagePlacement { placement } => {
+                write!(
+                    formatter,
+                    "frame patch image placement {placement} is invalid"
+                )
+            }
+            Self::TooManyImagePlacements {
+                placements,
+                maximum,
+            } => write!(
+                formatter,
+                "frame patch contains {placements} image placements, exceeding the {maximum}-placement limit"
+            ),
+            Self::ImageSceneTooLarge { bytes, maximum } => write!(
+                formatter,
+                "frame patch references {bytes} decoded image bytes, exceeding the {maximum}-byte limit"
+            ),
         }
     }
 }
@@ -258,7 +301,10 @@ impl FramePatch {
     pub fn is_empty(&self) -> bool {
         let nonempty_full_repaint =
             self.full_repaint && self.size.width != 0 && self.size.height != 0;
-        self.runs.is_empty() && !self.cursor_changed && !nonempty_full_repaint
+        self.runs.is_empty()
+            && !self.cursor_changed
+            && !nonempty_full_repaint
+            && self.images.is_none()
     }
 
     /// Validates run geometry and the atomic wide-grapheme contract.
@@ -376,6 +422,32 @@ impl FramePatch {
                 return Err(FramePatchValidationError::IncompleteFullRepaint);
             }
         }
+        if let Some(images) = &self.images {
+            if images.placements().len() > MAX_IMAGE_PLACEMENTS {
+                return Err(FramePatchValidationError::TooManyImagePlacements {
+                    placements: images.placements().len(),
+                    maximum: MAX_IMAGE_PLACEMENTS,
+                });
+            }
+            let mut sources = HashSet::new();
+            let mut source_bytes = 0_usize;
+            for (placement, image) in images.placements().iter().enumerate() {
+                if !image.is_valid_for(self.size) {
+                    return Err(FramePatchValidationError::InvalidImagePlacement { placement });
+                }
+                if sources.insert(image.image().id()) {
+                    source_bytes = source_bytes
+                        .checked_add(image.image().pixels().len())
+                        .unwrap_or(usize::MAX);
+                    if source_bytes > MAX_IMAGE_SCENE_BYTES {
+                        return Err(FramePatchValidationError::ImageSceneTooLarge {
+                            bytes: source_bytes,
+                            maximum: MAX_IMAGE_SCENE_BYTES,
+                        });
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -479,6 +551,7 @@ impl FramePatch {
 #[derive(Clone, Debug)]
 pub struct PreparedFrame {
     next: Buffer,
+    images: ImageScene,
     hit_map: HitMap,
     cursor: CursorState,
     patch: FramePatch,
@@ -500,6 +573,7 @@ pub struct FramePreparationTimings {
 impl PartialEq for PreparedFrame {
     fn eq(&self, other: &Self) -> bool {
         self.next == other.next
+            && self.images == other.images
             && self.hit_map == other.hit_map
             && self.cursor == other.cursor
             && self.patch == other.patch
@@ -550,6 +624,12 @@ impl PreparedFrame {
         &self.next
     }
 
+    /// Returns the prepared native-image scene.
+    #[must_use]
+    pub const fn images(&self) -> &ImageScene {
+        &self.images
+    }
+
     /// Returns the interactive map prepared with the logical frame.
     #[must_use]
     pub const fn hit_map(&self) -> &HitMap {
@@ -595,6 +675,7 @@ pub struct Renderer {
     id: u64,
     generation: u64,
     current: Buffer,
+    images: ImageScene,
     hit_map: HitMap,
     cursor: CursorState,
     graphemes: GraphemeStore,
@@ -610,6 +691,7 @@ impl Clone for Renderer {
             id: next_renderer_id(),
             generation: self.generation,
             current: self.current.clone(),
+            images: self.images.clone(),
             hit_map: self.hit_map.clone(),
             cursor: self.cursor,
             graphemes: self.graphemes.clone(),
@@ -627,6 +709,7 @@ impl Renderer {
             id: next_renderer_id(),
             generation: 0,
             current: Buffer::new(size),
+            images: ImageScene::new(),
             hit_map: HitMap::new(size),
             cursor: CursorState::default(),
             graphemes: GraphemeStore::new(),
@@ -639,6 +722,12 @@ impl Renderer {
     #[must_use]
     pub const fn current(&self) -> &Buffer {
         &self.current
+    }
+
+    /// Returns the committed native-image scene.
+    #[must_use]
+    pub const fn images(&self) -> &ImageScene {
+        &self.images
     }
 
     /// Returns the hit map committed with the current logical frame.
@@ -680,8 +769,8 @@ impl Renderer {
     where
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
-        let (next, hit_map, graphemes) = self.paint_frame(size, paint)?;
-        self.diff_frame(next, hit_map, graphemes, cursor)
+        let (next, images, hit_map, graphemes) = self.paint_frame(size, paint)?;
+        self.diff_frame(next, images, hit_map, graphemes, cursor)
     }
 
     /// Paints and diffs a complete logical frame while measuring each phase.
@@ -695,11 +784,11 @@ impl Renderer {
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
         let paint_started = Instant::now();
-        let (next, hit_map, graphemes) = self.paint_frame(size, paint)?;
+        let (next, images, hit_map, graphemes) = self.paint_frame(size, paint)?;
         let paint = paint_started.elapsed();
 
         let diff_started = Instant::now();
-        let prepared = self.diff_frame(next, hit_map, graphemes, cursor)?;
+        let prepared = self.diff_frame(next, images, hit_map, graphemes, cursor)?;
         let diff = diff_started.elapsed();
         Ok((prepared, FramePreparationTimings { paint, diff }))
     }
@@ -710,8 +799,8 @@ impl Renderer {
     /// hit map. Cursor changes and pending full-repaint requirements are still
     /// reflected in the returned patch.
     pub fn prepare_reused(&mut self, cursor: CursorState) -> Result<PreparedFrame, RenderError> {
-        let (next, hit_map, graphemes) = self.clone_current_frame();
-        self.diff_frame(next, hit_map, graphemes, cursor)
+        let (next, images, hit_map, graphemes) = self.clone_current_frame();
+        self.diff_frame(next, images, hit_map, graphemes, cursor)
     }
 
     /// Prepares unchanged committed logical content while measuring each phase.
@@ -723,11 +812,11 @@ impl Renderer {
         cursor: CursorState,
     ) -> Result<(PreparedFrame, FramePreparationTimings), RenderError> {
         let paint_started = Instant::now();
-        let (next, hit_map, graphemes) = self.clone_current_frame();
+        let (next, images, hit_map, graphemes) = self.clone_current_frame();
         let paint = paint_started.elapsed();
 
         let diff_started = Instant::now();
-        let prepared = self.diff_frame(next, hit_map, graphemes, cursor)?;
+        let prepared = self.diff_frame(next, images, hit_map, graphemes, cursor)?;
         let diff = diff_started.elapsed();
         Ok((prepared, FramePreparationTimings { paint, diff }))
     }
@@ -744,8 +833,8 @@ impl Renderer {
     where
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
-        let (next, hit_map, graphemes) = self.repaint_current_frame(paint)?;
-        self.diff_frame(next, hit_map, graphemes, cursor)
+        let (next, images, hit_map, graphemes) = self.repaint_current_frame(paint)?;
+        self.diff_frame(next, images, hit_map, graphemes, cursor)
     }
 
     /// Selectively repaints committed logical content while measuring each phase.
@@ -761,18 +850,19 @@ impl Renderer {
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
         let paint_started = Instant::now();
-        let (next, hit_map, graphemes) = self.repaint_current_frame(paint)?;
+        let (next, images, hit_map, graphemes) = self.repaint_current_frame(paint)?;
         let paint = paint_started.elapsed();
 
         let diff_started = Instant::now();
-        let prepared = self.diff_frame(next, hit_map, graphemes, cursor)?;
+        let prepared = self.diff_frame(next, images, hit_map, graphemes, cursor)?;
         let diff = diff_started.elapsed();
         Ok((prepared, FramePreparationTimings { paint, diff }))
     }
 
-    fn clone_current_frame(&self) -> (Buffer, HitMap, GraphemeStore) {
+    fn clone_current_frame(&self) -> (Buffer, ImageScene, HitMap, GraphemeStore) {
         (
             self.current.clone(),
+            self.images.clone(),
             self.hit_map.clone(),
             self.graphemes.clone(),
         )
@@ -781,37 +871,55 @@ impl Renderer {
     fn repaint_current_frame<F>(
         &self,
         paint: F,
-    ) -> Result<(Buffer, HitMap, GraphemeStore), RenderError>
+    ) -> Result<(Buffer, ImageScene, HitMap, GraphemeStore), RenderError>
     where
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
-        let (mut next, mut hit_map, mut graphemes) = self.clone_current_frame();
-        let mut canvas =
-            Canvas::with_hit_map(&mut next, &mut graphemes, &mut hit_map, self.width_policy);
-        paint(&mut canvas)?;
-        Ok((next, hit_map, graphemes))
+        let (mut next, mut images, mut hit_map, mut graphemes) = self.clone_current_frame();
+        {
+            let mut canvas = Canvas::with_hit_map(
+                &mut next,
+                &mut graphemes,
+                &mut hit_map,
+                &mut images,
+                self.width_policy,
+            );
+            paint(&mut canvas)?;
+        }
+        images.finish_repaint();
+        Ok((next, images, hit_map, graphemes))
     }
 
     fn paint_frame<F>(
         &self,
         size: Size,
         paint: F,
-    ) -> Result<(Buffer, HitMap, GraphemeStore), RenderError>
+    ) -> Result<(Buffer, ImageScene, HitMap, GraphemeStore), RenderError>
     where
         F: FnOnce(&mut Canvas<'_>) -> Result<(), DrawError>,
     {
         let mut next = Buffer::new(size);
+        let mut images = ImageScene::new();
         let mut hit_map = HitMap::new(size);
         let mut graphemes = self.graphemes.clone();
-        let mut canvas =
-            Canvas::with_hit_map(&mut next, &mut graphemes, &mut hit_map, self.width_policy);
-        paint(&mut canvas)?;
-        Ok((next, hit_map, graphemes))
+        {
+            let mut canvas = Canvas::with_hit_map(
+                &mut next,
+                &mut graphemes,
+                &mut hit_map,
+                &mut images,
+                self.width_policy,
+            );
+            paint(&mut canvas)?;
+        }
+        images.finish_repaint();
+        Ok((next, images, hit_map, graphemes))
     }
 
     fn diff_frame(
         &self,
         next: Buffer,
+        images: ImageScene,
         hit_map: HitMap,
         graphemes: GraphemeStore,
         cursor: CursorState,
@@ -819,16 +927,23 @@ impl Renderer {
         let size = next.size();
         let full_repaint = self.force_full_repaint || self.current.size() != size;
         let patch = diff(
-            &self.current,
-            &next,
-            self.cursor,
-            cursor,
+            LogicalFrameRef {
+                buffer: &self.current,
+                images: &self.images,
+                cursor: self.cursor,
+            },
+            LogicalFrameRef {
+                buffer: &next,
+                images: &images,
+                cursor,
+            },
             full_repaint,
             &graphemes,
             self.width_policy,
         )?;
         Ok(PreparedFrame {
             next,
+            images,
             hit_map,
             cursor,
             patch,
@@ -860,6 +975,7 @@ impl Renderer {
                 }),
         );
         self.current = prepared.next;
+        self.images = prepared.images;
         self.hit_map = prepared.hit_map;
         self.cursor = prepared.cursor;
         self.graphemes = graphemes;
@@ -893,16 +1009,21 @@ fn next_renderer_id() -> u64 {
     NEXT_RENDERER_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+#[derive(Clone, Copy)]
+struct LogicalFrameRef<'a> {
+    buffer: &'a Buffer,
+    images: &'a ImageScene,
+    cursor: CursorState,
+}
+
 fn diff(
-    current: &Buffer,
-    next: &Buffer,
-    current_cursor: CursorState,
-    next_cursor: CursorState,
+    current: LogicalFrameRef<'_>,
+    next: LogicalFrameRef<'_>,
     full_repaint: bool,
     store: &GraphemeStore,
     width_policy: WidthPolicy,
 ) -> Result<FramePatch, GraphemeStoreError> {
-    let size = next.size();
+    let size = next.buffer.size();
     let mut runs = Vec::with_capacity(if full_repaint {
         usize::from(size.height)
     } else {
@@ -915,13 +1036,13 @@ fn diff(
         if !full_repaint {
             for x in 0..size.width {
                 let point = Point::new(i32::from(x), i32::from(y));
-                changed[usize::from(x)] = current.get(point) != next.get(point);
+                changed[usize::from(x)] = current.buffer.get(point) != next.buffer.get(point);
             }
             for x in 0..size.width {
                 if changed[usize::from(x)] {
                     let point = Point::new(i32::from(x), i32::from(y));
-                    include_grapheme_span(current, point, &mut changed);
-                    include_grapheme_span(next, point, &mut changed);
+                    include_grapheme_span(current.buffer, point, &mut changed);
+                    include_grapheme_span(next.buffer, point, &mut changed);
                 }
             }
         }
@@ -940,7 +1061,7 @@ fn diff(
                 if !changed[usize::from(x)] {
                     break;
                 }
-                if let Some(cell) = next.get(point) {
+                if let Some(cell) = next.buffer.get(point) {
                     cells.push(resolve_cell(*cell, store)?);
                 }
                 x += 1;
@@ -955,9 +1076,10 @@ fn diff(
     let patch = FramePatch {
         size,
         runs,
-        cursor: next_cursor,
-        cursor_changed: current_cursor != next_cursor,
+        cursor: next.cursor,
+        cursor_changed: current.cursor != next.cursor,
         full_repaint,
+        images: (full_repaint || current.images != next.images).then(|| next.images.clone()),
     };
     debug_assert_eq!(patch.validate_for_width_policy(width_policy), Ok(()));
     Ok(patch)
@@ -1307,6 +1429,7 @@ mod tests {
             cursor: CursorState::HIDDEN,
             cursor_changed: false,
             full_repaint: false,
+            images: None,
         };
         let mut buffer = Buffer::new(patch.size);
         let original = buffer.clone();
@@ -1405,11 +1528,12 @@ mod tests {
     }
 
     #[test]
-    fn zero_area_full_repaint_remains_valid_and_empty() -> Result<(), RenderError> {
+    fn zero_area_full_repaint_reasserts_an_empty_image_scene() -> Result<(), RenderError> {
         let patch = empty_full_patch(Size::new(0, 2))?;
 
         assert_eq!(patch.validate(), Ok(()));
-        assert!(patch.is_empty());
+        assert_eq!(patch.images, Some(ImageScene::new()));
+        assert!(!patch.is_empty());
         Ok(())
     }
 
@@ -1490,6 +1614,7 @@ mod tests {
             cursor: CursorState::HIDDEN,
             cursor_changed: false,
             full_repaint: false,
+            images: None,
         };
 
         assert_eq!(patch.validate(), Ok(()));
@@ -1715,6 +1840,255 @@ mod tests {
         let stale = first.prepare(Size::new(1, 1), CursorState::default(), |_| Ok(()))?;
         assert_eq!(first.commit(current), Ok(()));
         assert_eq!(first.commit(stale), Err(CommitError::StaleFrame));
+        Ok(())
+    }
+
+    #[test]
+    fn image_scenes_are_diffed_and_committed_transactionally()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(1, 1, vec![1, 2, 3, 4])?;
+        let mut renderer = Renderer::new(Size::new(3, 1), WidthPolicy::Unicode);
+        let initial = renderer.prepare(Size::new(3, 1), CursorState::HIDDEN, |canvas| {
+            assert!(canvas.draw_image(Rect::new(0, 0, 1, 1), &image)?);
+            Ok(())
+        })?;
+        assert_eq!(initial.patch().images, Some(initial.images().clone()));
+        assert_eq!(renderer.commit(initial), Ok(()));
+        assert_eq!(renderer.images().placements().len(), 1);
+
+        let unchanged = renderer.prepare(Size::new(3, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_image(Rect::new(0, 0, 1, 1), &image)?;
+            Ok(())
+        })?;
+        assert!(unchanged.patch().is_empty());
+        renderer.discard(unchanged);
+
+        let moved = renderer.prepare(Size::new(3, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_image(Rect::new(1, 0, 1, 1), &image)?;
+            Ok(())
+        })?;
+        assert!(moved.patch().runs.is_empty());
+        assert!(moved.patch().images.is_some());
+        assert!(!moved.patch().is_empty());
+        renderer.discard(moved);
+        assert_eq!(
+            renderer.images().placements()[0].destination(),
+            Rect::new(0, 0, 1, 1)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn removing_images_emits_an_empty_replacement_scene() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let initial = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_image(Rect::new(0, 0, 1, 1), &image)?;
+            Ok(())
+        })?;
+        renderer.commit(initial)?;
+
+        let removed = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |_| Ok(()))?;
+        assert!(
+            removed
+                .patch()
+                .images
+                .as_ref()
+                .is_some_and(ImageScene::is_empty)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn uncertain_image_write_reasserts_the_complete_scene() -> Result<(), Box<dyn std::error::Error>>
+    {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let initial = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_image(Rect::new(0, 0, 1, 1), &image)?;
+            Ok(())
+        })?;
+        renderer.commit(initial)?;
+        let uncertain = renderer.prepare_reused(CursorState::HIDDEN)?;
+        renderer.discard_uncertain(uncertain);
+
+        let recovery = renderer.prepare_reused(CursorState::HIDDEN)?;
+        assert!(recovery.patch().full_repaint);
+        assert_eq!(recovery.patch().images, Some(renderer.images().clone()));
+        Ok(())
+    }
+
+    #[test]
+    fn image_drawing_marks_the_visible_hit_region() -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(2, 1, vec![0; 8])?;
+        let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+        let prepared = renderer.prepare(Size::new(2, 1), CursorState::HIDDEN, |canvas| {
+            let mut canvas = canvas
+                .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(7)));
+            canvas.draw_image(Rect::new(0, 0, 2, 1), &image)?;
+            Ok(())
+        })?;
+
+        assert_eq!(
+            prepared.hit_map().get(Point::ORIGIN),
+            Some(crate::HitId::new(7))
+        );
+        assert_eq!(
+            prepared.hit_map().get(Point::new(1, 0)),
+            Some(crate::HitId::new(7))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn image_hit_region_replaces_a_complete_wide_grapheme_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(2, 1, vec![0; 8])?;
+        let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+        let prepared = renderer.prepare(Size::new(2, 1), CursorState::HIDDEN, |canvas| {
+            {
+                let mut text = canvas
+                    .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                    .with_hit(Some(crate::HitId::new(1)));
+                text.draw_text(Point::ORIGIN, "界", Style::default(), None)?;
+            }
+            let mut image_canvas = canvas
+                .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(2)));
+            image_canvas.draw_image(Rect::new(0, 0, 2, 1), &image)?;
+            Ok(())
+        })?;
+
+        assert_eq!(
+            prepared.hit_map().get(Point::ORIGIN),
+            Some(crate::HitId::new(2))
+        );
+        assert_eq!(
+            prepared.hit_map().get(Point::new(1, 0)),
+            Some(crate::HitId::new(2))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn clipped_image_defers_to_the_complete_fallback_hit_span()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let mut renderer = Renderer::new(Size::new(2, 1), WidthPolicy::Unicode);
+        let prepared = renderer.prepare(Size::new(2, 1), CursorState::HIDDEN, |canvas| {
+            {
+                let mut text = canvas
+                    .scoped(Rect::new(0, 0, 2, 1), Point::ORIGIN)
+                    .with_hit(Some(crate::HitId::new(1)));
+                text.draw_text(Point::ORIGIN, "界", Style::default(), None)?;
+            }
+            let mut image_canvas = canvas
+                .scoped(Rect::new(0, 0, 1, 1), Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(2)));
+            assert!(!image_canvas.draw_image(Rect::new(0, 0, 2, 1), &image)?);
+            Ok(())
+        })?;
+
+        assert_eq!(
+            prepared.hit_map().get(Point::ORIGIN),
+            Some(crate::HitId::new(1))
+        );
+        assert_eq!(
+            prepared.hit_map().get(Point::new(1, 0)),
+            Some(crate::HitId::new(1))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn renderer_rejects_excessive_image_placements() -> Result<(), Box<dyn std::error::Error>> {
+        let images = (0..=crate::MAX_IMAGE_PLACEMENTS)
+            .map(|_| crate::RgbaImage::new(1, 1, vec![0; 4]))
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+
+        let error = renderer
+            .prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
+                for image in &images {
+                    canvas.draw_image(Rect::new(0, 0, 1, 1), image)?;
+                }
+                Ok(())
+            })
+            .expect_err("the renderer must enforce its scene placement limit");
+
+        assert_eq!(
+            error,
+            RenderError::Draw(DrawError::ImageScene(
+                crate::ImageSceneError::TooManyPlacements {
+                    maximum: crate::MAX_IMAGE_PLACEMENTS,
+                }
+            ))
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn selective_repaint_removes_and_replays_intersecting_images()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let mut renderer = Renderer::new(Size::new(1, 2), WidthPolicy::Unicode);
+        let initial = renderer.prepare(Size::new(1, 2), CursorState::HIDDEN, |canvas| {
+            canvas.draw_image(Rect::new(0, 1, 1, 1), &image)?;
+            Ok(())
+        })?;
+        renderer.commit(initial)?;
+
+        let replayed = renderer.prepare_from_current(CursorState::HIDDEN, |canvas| {
+            let mut damaged = canvas.with_damage_rows(&[false, true]);
+            damaged.draw_image(Rect::new(0, 1, 1, 1), &image)?;
+            Ok(())
+        })?;
+        assert!(replayed.patch().images.is_none());
+        renderer.discard(replayed);
+
+        let removed = renderer.prepare_from_current(CursorState::HIDDEN, |canvas| {
+            let _damaged = canvas.with_damage_rows(&[false, true]);
+            Ok(())
+        })?;
+        assert!(
+            removed
+                .patch()
+                .images
+                .as_ref()
+                .is_some_and(ImageScene::is_empty)
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn frame_validation_rejects_invalid_and_excessive_image_placements()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let mut patch = empty_full_patch(Size::new(1, 1))?;
+        patch.images = Some(ImageScene::from_placements([crate::ImagePlacement::new(
+            image.clone(),
+            Rect::new(1, 0, 1, 1),
+        )]));
+        assert_eq!(
+            patch.validate(),
+            Err(FramePatchValidationError::InvalidImagePlacement { placement: 0 })
+        );
+
+        patch.images = Some(ImageScene::from_placements(
+            std::iter::repeat_with(|| {
+                crate::ImagePlacement::new(image.clone(), Rect::new(0, 0, 1, 1))
+            })
+            .take(MAX_IMAGE_PLACEMENTS + 1),
+        ));
+        assert_eq!(
+            patch.validate(),
+            Err(FramePatchValidationError::TooManyImagePlacements {
+                placements: MAX_IMAGE_PLACEMENTS + 1,
+                maximum: MAX_IMAGE_PLACEMENTS,
+            })
+        );
         Ok(())
     }
 }

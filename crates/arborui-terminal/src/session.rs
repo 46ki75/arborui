@@ -241,6 +241,7 @@ mod tests {
                 cursor: arborui_core::CursorState::default(),
                 cursor_changed: false,
                 full_repaint: false,
+                images: None,
             };
             assert_eq!(session.write_patch(&patch)?, WriteOutcome::Deferred);
             session.resume()?;
@@ -474,6 +475,7 @@ mod tests {
             cursor: arborui_core::CursorState::default(),
             cursor_changed: true,
             full_repaint: false,
+            images: None,
         };
         assert!(session.write_patch(&patch).is_err());
         assert!(
@@ -500,6 +502,7 @@ mod tests {
             cursor: arborui_core::CursorState::default(),
             cursor_changed: true,
             full_repaint: false,
+            images: None,
         };
         assert_eq!(session.write_patch(&patch)?, WriteOutcome::StateUnknown);
         assert!(session.take_full_repaint_required());

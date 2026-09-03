@@ -13,7 +13,10 @@ pub use backend::TestBackendError;
 pub use frame::{TestCell, TestCellContent, TestFrame};
 
 pub use arborui_core::{CursorState, Point, Size, Style};
-pub use arborui_render::{FramePatch, HyperlinkId};
+pub use arborui_render::{
+    FramePatch, HyperlinkId, ImageError, ImageId, ImagePlacement, ImageScene, ImageSceneError,
+    MAX_IMAGE_BYTES, MAX_IMAGE_PLACEMENTS, MAX_IMAGE_SCENE_BYTES, PixelRect, RgbaImage,
+};
 pub use arborui_runtime::{
     DispatchReport, EventIngressMetrics, EventProxy, EventProxySendError, EventProxySendErrorKind,
     RuntimeOptions,
