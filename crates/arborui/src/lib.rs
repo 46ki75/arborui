@@ -6,6 +6,8 @@
 //!
 //! The default `crossterm` feature exports `CrosstermBackend`. Disable
 //! default features when providing another terminal backend.
+//! The non-default `image-decoding` feature exports [`image_decoder`] for
+//! converting common encoded raster formats into [`RgbaImage`].
 
 /// Foundational geometry, color, style, and cursor types.
 pub use arborui_core as core;
@@ -26,6 +28,8 @@ pub use arborui_widgets as widgets;
 
 #[cfg(feature = "crossterm")]
 pub use arborui_backend_crossterm::{CrosstermBackend, KittyGraphicsMode};
+#[cfg(feature = "image-decoding")]
+pub use arborui_image as image_decoder;
 
 pub use arborui_core::{
     Color, CursorShape, CursorState, CursorVisibility, Insets, Modifier, Point, Rect, Size, Style,

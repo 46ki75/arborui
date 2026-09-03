@@ -2,8 +2,8 @@
 
 `arborui` is an experimental Rust-native terminal user interface library. It is
 being designed as a collection of focused crates for text processing,
-rendering, layout, terminal integration, retained UI identity, application
-runtime behavior, and widgets.
+rendering, optional encoded-image decoding, layout, terminal integration,
+retained UI identity, application runtime behavior, and widgets.
 
 The project is in its initial implementation phase. The current code provides
 shared core types, Unicode grapheme measurement, cell buffers, clipped drawing,
@@ -19,10 +19,11 @@ orchestration. Standard controlled widgets include flex composition, blocks,
 buttons, stacks, lists, scrolling, and grapheme-aware text input. The public
 API also provides validated backend-neutral decoded RGBA images, transactional
 image scenes, and an explicit-cell-size image widget with a text fallback. The
-Crossterm backend offers configured-first Kitty direct graphics on the
-alternate screen. The public `arborui-test` harness drives complete applications
-with deterministic time, headless input, frame snapshots, image-scene
-inspection, and simulated output failures.
+optional `image-decoding` feature decodes common raster formats into those RGBA
+images. The Crossterm backend offers configured-first Kitty direct graphics on
+the alternate screen. The public `arborui-test` harness drives complete
+applications with deterministic time, headless input, frame snapshots,
+image-scene inspection, and simulated output failures.
 
 ## Features
 
@@ -33,6 +34,21 @@ terminal backend. Disable default features when integrating another backend:
 [dependencies]
 arborui = { version = "0.1.0", default-features = false }
 ```
+
+The non-default `image-decoding` feature provides content-detected raster
+decoding through `arborui::image_decoder`:
+
+```toml
+[dependencies]
+arborui = { version = "0.1.0", features = ["image-decoding"] }
+```
+
+```rust
+let image = arborui::image_decoder::load("photo.webp")?;
+```
+
+It supports BMP, GIF, ICO, JPEG, PNG, PNM, QOI, TGA, TIFF, and WebP. Animated
+inputs decode their first frame.
 
 Application code can import common model-update-view and widget APIs from the
 prelude:
@@ -62,11 +78,12 @@ See `examples/counter` for the smallest complete facade-only application. The
 rows, focus traversal, mouse scrolling, styling, deterministic commands, and
 orderly shutdown through the same public boundary.
 
-The `examples/kitty-image` application generates RGBA test patterns without
-external assets and exercises native image replacement, layering, movement,
-cleanup, clipping, and fallback behavior. Launch it in a directly connected
-Kitty-compatible terminal with `just run-kitty-image`; see the example README
-for forced-enabled and forced-disabled commands.
+The `examples/kitty-image` application accepts an optional encoded raster image
+and otherwise generates RGBA test patterns. It exercises native image
+replacement, layering, movement, cleanup, clipping, and fallback behavior.
+Launch it in a directly connected Kitty-compatible terminal with
+`just run-kitty-image`; see the example README for asset and graphics-mode
+commands.
 
 Launch the pilot in a terminal with:
 

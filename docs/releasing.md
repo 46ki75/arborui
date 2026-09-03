@@ -5,7 +5,7 @@ use the same version and one `vX.Y.Z` tag.
 
 ## First-Release Name Gate
 
-The eleven `arborui` package names had no exact crates.io matches when the
+The twelve `arborui` package names had no exact crates.io matches when the
 project was renamed. Recheck the complete package family immediately before the
 first release because availability can change. The release script requires
 `ARBORUI_CRATES_IO_NAME_CONFIRMED=1` for a real upload so this check cannot be

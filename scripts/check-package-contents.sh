@@ -6,6 +6,7 @@ packages=(
   arborui-text
   arborui-layout
   arborui-render
+  arborui-image
   arborui-terminal
   arborui-ui
   arborui-backend-crossterm

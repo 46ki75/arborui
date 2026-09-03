@@ -11,7 +11,7 @@ license.workspace = true
 workspace = true
 
 [dependencies]
-arborui = { workspace = true }
+arborui = { workspace = true, features = ["image-decoding"] }
 
 [dev-dependencies]
 arborui-test = { workspace = true }

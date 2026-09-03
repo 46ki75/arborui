@@ -24,6 +24,7 @@ arborui-backend-crossterm = { path = "crates/arborui-backend-crossterm", version
 arborui-render = { path = "crates/arborui-render", version = "=0.1.0" }
 arborui-runtime = { path = "crates/arborui-runtime", version = "=0.1.0" }
 arborui-layout = { path = "crates/arborui-layout", version = "=0.1.0" }
+arborui-image = { path = "crates/arborui-image", version = "=0.1.0" }
 arborui-terminal = { path = "crates/arborui-terminal", version = "=0.1.0" }
 arborui-text = { path = "crates/arborui-text", version = "=0.1.0" }
 arborui-ui = { path = "crates/arborui-ui", version = "=0.1.0" }

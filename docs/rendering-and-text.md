@@ -161,9 +161,13 @@ MiB per image. A renderer-created scene is also limited to 4096 placements and
 256 MiB of unique decoded sources; exceeding either scene limit returns a
 `DrawError`. Clones share the immutable pixels and image identity.
 
-Applications must decode PNG and rasterize SVG or other encoded sources before
-constructing an `RgbaImage`. The renderer does not pass PNG data through to a
-terminal or perform application image decoding.
+The optional `arborui-image` crate content-detects BMP, GIF, ICO, JPEG, PNG,
+PNM, QOI, TGA, TIFF, and WebP, normalizes orientation and color space, and
+returns an `RgbaImage`. Animated formats use their first frame. It applies
+decoder limits before allocating the final 64 MiB-bounded RGBA payload. SVG and
+other vector formats still require application-provided rasterization. The
+renderer does not pass encoded data through to a terminal or perform image
+decoding itself.
 
 The `Image` widget requires explicit width and height in terminal cells. It
 paints `[image]` into the ordinary cell buffer by default, then records the

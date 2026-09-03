@@ -42,6 +42,14 @@ Each crate owns tests for its contracts.
   4096-placement limit validation
 - Whole-scene image replacement, clipping, commit, discard, and repaint recovery
 
+### `arborui-image`
+
+- Content detection independent of filename extensions
+- Supported lossless and lossy raster formats
+- Alpha preservation, orientation normalization, and sRGB RGBA conversion
+- Malformed, unsupported, and oversized input rejection
+- First-frame handling for animated input
+
 ### `arborui-layout`
 
 - Integer rounding
@@ -302,12 +310,14 @@ Deliver:
 
 - `arborui-text`
 - `arborui-render`
+- `arborui-image`
 - Width policy
 - Grapheme store
 - Cell and buffer
 - Canvas and surfaces
 - Frame diff and prepared-frame transaction
 - Validated decoded RGBA images and transactional image scenes
+- Optional common raster decoding into validated RGBA images
 - Headless render tests
 
 Exit criterion: arbitrary frames can be painted, diffed, replayed, and verified

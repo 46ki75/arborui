@@ -59,8 +59,10 @@ command bytes and cleanup ordering, but not the resulting pixels.
   alternate screen. It has no PNG passthrough, filesystem or shared-memory
   transport, animation, tmux placeholders, or main-screen images. Sources above
   10,000 pixels on either axis remain fallback-only for Kitty compatibility.
-- Applications must decode PNG and rasterize SVG before constructing the
-  backend-neutral RGBA image supplied to ArborUI.
+- The optional `image-decoding` feature supports content-detected BMP, GIF, ICO,
+  JPEG, PNG, PNM, QOI, TGA, TIFF, and WebP input. Animated GIF and WebP input
+  uses the first frame. SVG and other vector formats must be rasterized before
+  constructing the backend-neutral RGBA image supplied to ArborUI.
 - The Crossterm backend does not currently resolve or emit OSC 8 hyperlinks and
   reports hyperlink support as disabled even when configured otherwise.
 - Unicode display depends on the selected `WidthPolicy` and the terminal's own

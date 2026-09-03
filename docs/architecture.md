@@ -79,9 +79,10 @@ The exact signatures may change, but these properties are required:
 
 ### Keep Backends Out Of Public UI Types
 
-No Crossterm, Termwiz, Taffy, or Tokio type appears in the core UI API. Decoded
-`RgbaImage` data and `ImageScene` placement are backend-neutral; adapter crates
-translate library-owned types at subsystem boundaries.
+No Crossterm, Termwiz, Taffy, Tokio, or third-party image type appears in the
+core UI API. Decoded `RgbaImage` data and `ImageScene` placement are
+backend-neutral; adapter crates translate library-owned types at subsystem
+boundaries.
 
 ### Prefer Correct Full Work Before Incorrect Incremental Work
 

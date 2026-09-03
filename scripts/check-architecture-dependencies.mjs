@@ -81,6 +81,9 @@ for (const pkg of packages) {
     if (name === "taffy" && pkg.name !== "arborui-layout") {
       violations.push(`${pkg.name} depends on taffy outside arborui-layout`);
     }
+    if (name === "image" && pkg.name !== "arborui-image") {
+      violations.push(`${pkg.name} depends on image outside arborui-image`);
+    }
     if (
       pkg.name === "arborui-ui" &&
       [

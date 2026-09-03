@@ -22,10 +22,12 @@ workspace = true
 [features]
 default = ["crossterm"]
 crossterm = ["dep:arborui-backend-crossterm"]
+image-decoding = ["dep:arborui-image"]
 
 [dependencies]
 arborui-backend-crossterm = { workspace = true, optional = true }
 arborui-core = { workspace = true }
+arborui-image = { workspace = true, optional = true }
 arborui-layout = { workspace = true }
 arborui-render = { workspace = true }
 arborui-runtime = { workspace = true }

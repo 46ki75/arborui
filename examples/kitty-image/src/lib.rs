@@ -32,6 +32,7 @@ pub struct KittyImageDemo {
     shifted: bool,
     visible: bool,
     graphics_status: String,
+    primary_status: String,
 }
 
 impl KittyImageDemo {
@@ -46,6 +47,30 @@ impl KittyImageDemo {
             shifted: false,
             visible: true,
             graphics_status: graphics_status.into(),
+            primary_status: "source: generated aurora (400x200)".to_owned(),
+        })
+    }
+
+    /// Creates the demo with a decoded image as its primary source.
+    pub fn with_image(
+        graphics_status: impl Into<String>,
+        image: RgbaImage,
+    ) -> Result<Self, arborui::ImageError> {
+        let primary_status = format!(
+            "source: loaded image ({}x{})",
+            image.width(),
+            image.height()
+        );
+        Ok(Self {
+            aurora: image,
+            sunset: base_image(true)?,
+            overlay: overlay_image()?,
+            warm_palette: false,
+            show_overlay: true,
+            shifted: false,
+            visible: true,
+            graphics_status: graphics_status.into(),
+            primary_status,
         })
     }
 
@@ -137,10 +162,10 @@ impl Application for KittyImageDemo {
     }
 
     fn view(&self) -> Element<'_, Self::Message> {
-        let palette = if self.warm_palette {
-            "palette: sunset"
+        let source = if self.warm_palette {
+            "source: generated sunset (400x200)"
         } else {
-            "palette: aurora"
+            &self.primary_status
         };
         let overlay = if self.show_overlay {
             "overlay: on"
@@ -158,7 +183,7 @@ impl Application for KittyImageDemo {
             "image: hidden"
         };
         let panel = Block::new(self.image_stage())
-            .title("400x200 RGBA -> 40x10 cells")
+            .title("RGBA source -> 40x10 cells")
             .padding(Insets::all(1))
             .border_style(Style::new().foreground(Color::BrightCyan))
             .layout(
@@ -178,7 +203,7 @@ impl Application for KittyImageDemo {
                 ),
                 row_with_gap(
                     [
-                        text(palette),
+                        text(source),
                         text(overlay),
                         text(position),
                         text(visibility),
@@ -321,6 +346,24 @@ mod tests {
 
         app.send(Message::ToggleVisible);
         assert!(app.frame().images().is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn accepts_a_loaded_primary_image() -> Result<(), arborui::ImageError> {
+        let image = RgbaImage::new(3, 2, vec![255; 3 * 2 * 4])?;
+        let id = image.id();
+        let app = TestApp::new(
+            KittyImageDemo::with_image("headless test", image)?,
+            Size::new(80, 30),
+        );
+
+        assert_eq!(app.frame().images().placements()[0].image().id(), id);
+        assert!(
+            app.frame()
+                .characters()
+                .contains("source: loaded image (3x2)")
+        );
         Ok(())
     }
 }

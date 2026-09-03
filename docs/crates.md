@@ -10,6 +10,7 @@ arborui/
     arborui-core/
     arborui-text/
     arborui-render/
+    arborui-image/
     arborui-layout/
     arborui-terminal/
     arborui-backend-crossterm/
@@ -30,6 +31,7 @@ boundary.
 
 ```text
 arborui-render            -> arborui-core, arborui-text
+arborui-image             -> arborui-render
 arborui-layout            -> arborui-core
 arborui-terminal          -> arborui-core, arborui-render, arborui-text
 arborui-backend-crossterm -> arborui-core, arborui-render, arborui-terminal
@@ -107,6 +109,15 @@ surface
 
 It accepts geometry and style but does not know about application messages,
 focus traversal, widgets, or terminal backend libraries.
+
+### `arborui-image`
+
+Owns optional decoding of common encoded raster formats into
+`arborui-render::RgbaImage`. It content-detects input, applies decoder and
+decoded-size limits, normalizes orientation and color space, and returns only
+library-owned public types. Third-party image types remain private to this
+crate. Animated formats use their first frame; vector rasterization remains an
+application concern.
 
 ### `arborui-layout`
 
@@ -255,12 +266,14 @@ pub use arborui_backend_crossterm::CrosstermBackend;
 
 ## Features
 
-The facade initially provides one backend-selection feature:
+The facade provides a default backend-selection feature and optional image
+decoding:
 
 ```toml
 [features]
 default = ["crossterm"]
 crossterm = ["dep:arborui-backend-crossterm"]
+image-decoding = ["dep:arborui-image"]
 ```
 
 `arborui-test` remains a separate development dependency so tests exercise an
@@ -306,7 +319,7 @@ Publish in topological dependency order:
 
 1. `arborui-core` and `arborui-text`
 2. `arborui-layout` and `arborui-render`
-3. `arborui-terminal` and `arborui-ui`
+3. `arborui-image`, `arborui-terminal`, and `arborui-ui`
 4. `arborui-backend-crossterm`, `arborui-runtime`, and `arborui-widgets`
 5. `arborui-test`
 6. `arborui`
