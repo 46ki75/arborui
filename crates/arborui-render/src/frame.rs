@@ -1030,6 +1030,7 @@ fn diff(
         0
     });
     let mut changed = vec![false; usize::from(size.width)];
+    let images_changed = current.images != next.images;
 
     for y in 0..size.height {
         changed.fill(full_repaint);
@@ -1037,6 +1038,12 @@ fn diff(
             for x in 0..size.width {
                 let point = Point::new(i32::from(x), i32::from(y));
                 changed[usize::from(x)] = current.buffer.get(point) != next.buffer.get(point);
+            }
+            if images_changed {
+                // Deleted images can leave terminal-owned tile references behind.
+                // Repainting both rectangles clears them before new placements.
+                include_image_coverage(current.images, y, &mut changed);
+                include_image_coverage(next.images, y, &mut changed);
             }
             for x in 0..size.width {
                 if changed[usize::from(x)] {
@@ -1079,10 +1086,31 @@ fn diff(
         cursor: next.cursor,
         cursor_changed: current.cursor != next.cursor,
         full_repaint,
-        images: (full_repaint || current.images != next.images).then(|| next.images.clone()),
+        images: (full_repaint || images_changed).then(|| next.images.clone()),
     };
     debug_assert_eq!(patch.validate_for_width_policy(width_policy), Ok(()));
     Ok(patch)
+}
+
+fn include_image_coverage(scene: &ImageScene, y: u16, changed: &mut [bool]) {
+    let y = i32::from(y);
+    for placement in scene.placements() {
+        let destination = placement.destination();
+        if y < destination.y || y >= destination.bottom() {
+            continue;
+        }
+        let Ok(start) = usize::try_from(destination.x) else {
+            continue;
+        };
+        let Ok(end) = usize::try_from(destination.right()) else {
+            continue;
+        };
+        let start = start.min(changed.len());
+        let end = end.min(changed.len());
+        if start < end {
+            changed[start..end].fill(true);
+        }
+    }
 }
 
 fn include_grapheme_span(buffer: &Buffer, point: Point, changed: &mut [bool]) {
@@ -1867,7 +1895,9 @@ mod tests {
             canvas.draw_image(Rect::new(1, 0, 1, 1), &image)?;
             Ok(())
         })?;
-        assert!(moved.patch().runs.is_empty());
+        assert_eq!(moved.patch().runs.len(), 1);
+        assert_eq!(moved.patch().runs[0].position, Point::new(0, 0));
+        assert_eq!(moved.patch().runs[0].cells.len(), 2);
         assert!(moved.patch().images.is_some());
         assert!(!moved.patch().is_empty());
         renderer.discard(moved);

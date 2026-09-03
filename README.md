@@ -78,12 +78,12 @@ See `examples/counter` for the smallest complete facade-only application. The
 rows, focus traversal, mouse scrolling, styling, deterministic commands, and
 orderly shutdown through the same public boundary.
 
-The `examples/kitty-image` application accepts an optional encoded raster image
-and otherwise generates RGBA test patterns. It exercises native image
-replacement, layering, movement, cleanup, clipping, and fallback behavior.
-Launch it in a directly connected Kitty-compatible terminal with
-`just run-kitty-image`; see the example README for asset and graphics-mode
-commands.
+The `examples/kitty-image` application accepts an encoded raster image or
+directory and defaults to `./images`. It provides a full-terminal selection list
+and aspect-fitted preview while exercising native image replacement, overlay
+compositing, resizing, movement, cleanup, and fallback behavior. Launch it in a
+directly connected Kitty-compatible terminal with `just run-kitty-image`; see
+the example README for asset and graphics-mode commands.
 
 Launch the pilot in a terminal with:
 

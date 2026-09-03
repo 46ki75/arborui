@@ -62,6 +62,7 @@ dependencies = [
  "arborui-text",
  "base64",
  "crossterm",
+ "flate2",
  "portable-pty",
 ]
 

@@ -251,8 +251,8 @@ impl ImagePlacement {
     }
 
     pub(crate) fn clipped(image: RgbaImage, destination: Rect, visible: Rect) -> Option<Self> {
-        // Kitty preserves aspect ratio within c/r, so a backend-neutral cell
-        // crop cannot map to pixels without knowing the terminal's cell size.
+        // A clipped destination needs a matching source-pixel crop; retain the
+        // cell fallback until that mapping is represented explicitly.
         (destination == visible).then(|| Self::new(image, destination))
     }
 

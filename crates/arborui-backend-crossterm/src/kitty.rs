@@ -6,8 +6,8 @@ use std::{
 use arborui_render::{ImageId, ImagePlacement, ImageScene, RgbaImage};
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use crossterm::{QueueableCommand, cursor::MoveTo, terminal::EndSynchronizedUpdate};
+use flate2::{Compression, write::ZlibEncoder};
 
-const RAW_CHUNK_BYTES: usize = 3_072;
 const MAX_IMAGE_DIMENSION: u32 = 10_000;
 
 #[derive(Debug)]
@@ -32,27 +32,21 @@ impl Default for KittyState {
 pub(crate) struct PreparedUpdate<'a> {
     recover_stream: bool,
     delete_ids: Vec<u32>,
-    images: Vec<PreparedImage<'a>>,
     placements: Vec<PreparedPlacement<'a>>,
     desired_image_ids: HashSet<ImageId>,
     desired_wire_ids: BTreeSet<u32>,
-}
-
-struct PreparedImage<'a> {
-    id: u32,
-    image: &'a RgbaImage,
 }
 
 struct PreparedPlacement<'a> {
     id: u32,
     z_index: i32,
     placement: &'a ImagePlacement,
+    upload: bool,
 }
 
 impl KittyState {
     pub(crate) fn prepare<'a>(&mut self, scene: &'a ImageScene) -> PreparedUpdate<'a> {
         let delete_ids = self.possibly_owned.iter().copied().collect();
-        let mut images = Vec::new();
         let mut placements = Vec::with_capacity(scene.placements().len());
         let mut desired_image_ids = HashSet::new();
         let mut desired_wire_ids = BTreeSet::new();
@@ -64,14 +58,15 @@ impl KittyState {
             }
             let image_id = image.id();
             let wire_id = self.wire_id(image_id);
-            if desired_image_ids.insert(image_id) {
-                images.push(PreparedImage { id: wire_id, image });
+            let upload = desired_image_ids.insert(image_id);
+            if upload {
                 desired_wire_ids.insert(wire_id);
             }
             placements.push(PreparedPlacement {
                 id: wire_id,
                 z_index: i32::try_from(index + 1).unwrap_or(i32::MAX),
                 placement,
+                upload,
             });
         }
 
@@ -81,7 +76,6 @@ impl KittyState {
         PreparedUpdate {
             recover_stream: self.stream_uncertain,
             delete_ids,
-            images,
             placements,
             desired_image_ids,
             desired_wire_ids,
@@ -134,10 +128,7 @@ impl KittyState {
 
 impl PreparedUpdate<'_> {
     pub(crate) fn has_output(&self) -> bool {
-        self.recover_stream
-            || !self.delete_ids.is_empty()
-            || !self.images.is_empty()
-            || !self.placements.is_empty()
+        self.recover_stream || !self.delete_ids.is_empty() || !self.placements.is_empty()
     }
 }
 
@@ -172,11 +163,12 @@ pub(crate) fn write_update_content<W: Write>(
     writer: &mut W,
     update: &PreparedUpdate<'_>,
 ) -> io::Result<()> {
-    for image in &update.images {
-        write_image(writer, image.id, image.image)?;
-    }
     for placement in &update.placements {
-        write_placement(writer, placement)?;
+        if placement.upload {
+            write_image(writer, placement)?;
+        } else {
+            write_placement(writer, placement)?;
+        }
     }
     Ok(())
 }
@@ -190,29 +182,56 @@ fn write_update<W: Write>(writer: &mut W, update: &PreparedUpdate<'_>) -> io::Re
 
 pub(crate) fn write_deletions<W: Write>(writer: &mut W, ids: &[u32]) -> io::Result<()> {
     for id in ids {
-        write!(writer, "\x1b_Ga=d,d=N,I={id},q=2\x1b\\")?;
+        write!(writer, "\x1b_Ga=d,d=I,i={id},q=2\x1b\\")?;
     }
     Ok(())
 }
 
-fn write_image<W: Write>(writer: &mut W, id: u32, image: &RgbaImage) -> io::Result<()> {
-    let chunks = image.pixels().chunks(RAW_CHUNK_BYTES);
-    let chunk_count = chunks.len();
-    for (index, bytes) in chunks.enumerate() {
-        let more = u8::from(index + 1 < chunk_count);
-        let payload = STANDARD.encode(bytes);
-        if index == 0 {
-            write!(
-                writer,
-                "\x1b_Ga=t,f=32,t=d,s={},v={},I={id},q=2,m={more};{payload}\x1b\\",
-                image.width(),
-                image.height()
-            )?;
-        } else {
-            write!(writer, "\x1b_Gm={more},q=2;{payload}\x1b\\")?;
-        }
-    }
+fn write_image<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -> io::Result<()> {
+    let id = prepared.id;
+    let placement = prepared.placement;
+    let image = placement.image();
+    let (format, encoded) = encode_pixels(image)?;
+    let destination = placement.destination();
+    let source = placement.source();
+    let x = u16::try_from(destination.x).map_err(|_| invalid_coordinate(destination.x))?;
+    let y = u16::try_from(destination.y).map_err(|_| invalid_coordinate(destination.y))?;
+    writer.queue(MoveTo(x, y))?;
+    // xterm.js accepts direct payloads of this size but fails to complete some
+    // multi-command uploads. Auto detection already excludes indirect sessions.
+    let payload = STANDARD.encode(encoded);
+    write!(
+        writer,
+        "\x1b_Ga=T,f={format},t=d,o=z,s={},v={},i={id},x={},y={},w={},h={},c={},r={},C=1,q=2,z={};{payload}\x1b\\",
+        image.width(),
+        image.height(),
+        source.x,
+        source.y,
+        source.width,
+        source.height,
+        destination.width,
+        destination.height,
+        prepared.z_index
+    )?;
     Ok(())
+}
+
+fn encode_pixels(image: &RgbaImage) -> io::Result<(u8, Vec<u8>)> {
+    let opaque = image
+        .pixels()
+        .chunks_exact(4)
+        .all(|pixel| pixel[3] == u8::MAX);
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+    if opaque {
+        let mut rgb = Vec::with_capacity(image.pixels().len() / 4 * 3);
+        for pixel in image.pixels().chunks_exact(4) {
+            rgb.extend_from_slice(&pixel[..3]);
+        }
+        encoder.write_all(&rgb)?;
+    } else {
+        encoder.write_all(image.pixels())?;
+    }
+    Ok((if opaque { 24 } else { 32 }, encoder.finish()?))
 }
 
 fn write_placement<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -> io::Result<()> {
@@ -225,7 +244,7 @@ fn write_placement<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -
     writer.queue(MoveTo(x, y))?;
     write!(
         writer,
-        "\x1b_Ga=p,I={id},x={},y={},w={},h={},c={},r={},C=1,q=2,z={}\x1b\\",
+        "\x1b_Ga=p,i={id},x={},y={},w={},h={},c={},r={},C=1,q=2,z={}\x1b\\",
         source.x,
         source.y,
         source.width,
@@ -246,13 +265,16 @@ fn invalid_coordinate(value: i32) -> io::Error {
 
 #[cfg(test)]
 mod tests {
+    use std::io::Read;
+
     use arborui_core::Rect;
     use arborui_render::ImagePlacement;
+    use flate2::read::ZlibDecoder;
 
     use super::*;
 
     #[test]
-    fn writes_direct_rgba_upload_and_placement() -> Result<(), Box<dyn std::error::Error>> {
+    fn combines_upload_with_first_placement() -> Result<(), Box<dyn std::error::Error>> {
         let image = RgbaImage::new(1, 1, vec![1, 2, 3, 4])?;
         let scene =
             ImageScene::from_placements([ImagePlacement::new(image, Rect::new(2, 3, 4, 5))]);
@@ -263,15 +285,40 @@ mod tests {
         write_update(&mut output, &update)?;
 
         let output = String::from_utf8(output)?;
-        assert!(output.contains("\x1b_Ga=t,f=32,t=d,s=1,v=1,I=1,q=2,m=0;AQIDBA==\x1b\\"));
         assert!(output.contains("\x1b[4;3H"));
-        assert!(output.contains("\x1b_Ga=p,I=1,x=0,y=0,w=1,h=1,c=4,r=5,C=1,q=2,z=1\x1b\\"));
+        assert!(
+            output.contains(
+                "\x1b_Ga=T,f=32,t=d,o=z,s=1,v=1,i=1,x=0,y=0,w=1,h=1,c=4,r=5,C=1,q=2,z=1;"
+            )
+        );
+        assert!(!output.contains("\x1b_Ga=t,"));
+        assert!(!output.contains("\x1b_Ga=p,"));
         Ok(())
     }
 
     #[test]
-    fn chunks_encoded_payloads_at_4096_bytes() -> Result<(), Box<dyn std::error::Error>> {
-        let image = RgbaImage::new(1_025, 1, vec![0; 1_025 * 4])?;
+    fn uses_image_ids_for_separate_placements() -> Result<(), Box<dyn std::error::Error>> {
+        let image = RgbaImage::new(1, 1, vec![1, 2, 3, 4])?;
+        let scene = ImageScene::from_placements([
+            ImagePlacement::new(image.clone(), Rect::new(0, 0, 1, 1)),
+            ImagePlacement::new(image, Rect::new(1, 0, 1, 1)),
+        ]);
+        let mut state = KittyState::default();
+        let update = state.prepare(&scene);
+        let mut output = Vec::new();
+
+        write_update(&mut output, &update)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(output.contains("\x1b_Ga=T,f=32,t=d,o=z,s=1,v=1,i=1,"));
+        assert!(output.contains("\x1b_Ga=p,i=1,"));
+        assert!(!output.contains(",I="));
+        Ok(())
+    }
+
+    #[test]
+    fn compresses_opaque_uploads_as_rgb() -> Result<(), Box<dyn std::error::Error>> {
+        let image = RgbaImage::new(2, 2, [10, 20, 30, 255].repeat(4))?;
         let scene =
             ImageScene::from_placements([ImagePlacement::new(image, Rect::new(0, 0, 1, 1))]);
         let mut state = KittyState::default();
@@ -281,15 +328,46 @@ mod tests {
         write_update(&mut output, &update)?;
 
         let output = String::from_utf8(output)?;
-        assert!(output.contains("q=2,m=1;"));
-        assert!(output.contains("\x1b_Gm=0,q=2;"));
-        let first_payload = output
-            .split("q=2,m=1;")
+        assert!(output.contains("f=24,t=d,o=z,s=2,v=2"));
+        let payload = output
+            .split("z=1;")
             .nth(1)
             .and_then(|value| value.split("\x1b\\").next())
-            .ok_or("missing first payload")?;
-        assert_eq!(first_payload.len(), 4_096);
+            .ok_or("missing compressed payload")?;
+        let compressed = STANDARD.decode(payload)?;
+        let mut decoded = Vec::new();
+        ZlibDecoder::new(compressed.as_slice()).read_to_end(&mut decoded)?;
+        assert_eq!(decoded, [10, 20, 30].repeat(4));
         Ok(())
+    }
+
+    #[test]
+    fn writes_image_as_one_direct_payload() -> Result<(), Box<dyn std::error::Error>> {
+        let image = RgbaImage::new(1_025, 1, pseudo_random_bytes(1_025 * 4))?;
+        let scene =
+            ImageScene::from_placements([ImagePlacement::new(image, Rect::new(0, 0, 1, 1))]);
+        let mut state = KittyState::default();
+        let update = state.prepare(&scene);
+        let mut output = Vec::new();
+
+        write_update(&mut output, &update)?;
+
+        let output = String::from_utf8(output)?;
+        assert!(!output.contains("\x1b_Gm="));
+        assert!(!output.contains("m=1"));
+        Ok(())
+    }
+
+    fn pseudo_random_bytes(length: usize) -> Vec<u8> {
+        let mut value = 0x1234_5678_u32;
+        (0..length)
+            .map(|_| {
+                value ^= value << 13;
+                value ^= value >> 17;
+                value ^= value << 5;
+                value as u8
+            })
+            .collect()
     }
 
     #[test]

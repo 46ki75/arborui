@@ -10,7 +10,7 @@ use crossterm::{
         Attribute, Color as CrosstermColor, Print, SetAttribute, SetBackgroundColor,
         SetForegroundColor, SetUnderlineColor,
     },
-    terminal::{BeginSynchronizedUpdate, EndSynchronizedUpdate},
+    terminal::{BeginSynchronizedUpdate, Clear, ClearType, EndSynchronizedUpdate},
 };
 
 use crate::kitty::{self, PreparedUpdate};
@@ -61,6 +61,9 @@ fn write_patch_body<W: Write>(
 ) -> io::Result<()> {
     if let Some(images) = images {
         kitty::write_update_prefix(writer, images)?;
+    }
+    if patch.full_repaint {
+        writer.queue(Clear(ClearType::All))?;
     }
 
     let mut active_style = None;
@@ -377,6 +380,29 @@ mod tests {
         assert!(output.windows(1).any(|window| window == b"x"));
         assert!(output.starts_with(b"\x1b[?2026h"));
         assert!(output.ends_with(b"\x1b[?2026l"));
+        Ok(())
+    }
+
+    #[test]
+    fn full_repaint_erases_terminal_before_drawing() -> Result<(), Box<dyn std::error::Error>> {
+        let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
+        let frame = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
+            canvas.draw_text(Point::ORIGIN, "x", Style::default(), None)?;
+            Ok(())
+        })?;
+        let mut output = Vec::new();
+
+        write_patch(&mut output, frame.patch(), &Capabilities::default())?;
+
+        let clear = output
+            .windows(b"\x1b[2J".len())
+            .position(|window| window == b"\x1b[2J")
+            .ok_or("missing full-screen erase")?;
+        let text = output
+            .iter()
+            .position(|byte| *byte == b'x')
+            .ok_or("missing repainted text")?;
+        assert!(clear < text);
         Ok(())
     }
 

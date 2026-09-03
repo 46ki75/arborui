@@ -124,7 +124,9 @@ fn test_frame_retains_native_image_scene() -> Result<(), Box<dyn std::error::Err
     let replacement_id = replacement.id();
     app.send(replacement);
     let patch = app.last_frame_patch().ok_or("missing image update patch")?;
-    assert!(patch.runs.is_empty());
+    assert_eq!(patch.runs.len(), 1);
+    assert_eq!(patch.runs[0].position, Point::new(0, 0));
+    assert_eq!(patch.runs[0].cells.len(), 2);
     assert!(patch.images.is_some());
     assert_eq!(
         app.frame().images().placements()[0].image().id(),

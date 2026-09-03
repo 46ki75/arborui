@@ -48,7 +48,8 @@ pub use arborui_runtime::{
 };
 pub use arborui_terminal::{
     AutowrapMode, Capabilities, KeyboardMode, MouseMode, ScreenMode, TerminalBackend,
-    TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
+    TerminalEvent, TerminalPixelSize, TerminalSession, TerminalState, TerminalViewport,
+    WriteOutcome,
 };
 pub use arborui_text::{
     ByteOffset, Selection, TextBuffer, TextEdit, TextMetrics, TextMovement, WidthPolicy,

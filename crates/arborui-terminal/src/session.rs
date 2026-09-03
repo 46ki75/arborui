@@ -3,7 +3,8 @@ use std::time::Duration;
 use arborui_core::Size;
 
 use crate::{
-    Capabilities, FramePatch, TerminalBackend, TerminalEvent, TerminalState, WriteOutcome,
+    Capabilities, FramePatch, TerminalBackend, TerminalEvent, TerminalState, TerminalViewport,
+    WriteOutcome,
 };
 
 /// RAII owner for a configured terminal backend.
@@ -43,6 +44,11 @@ impl<B: TerminalBackend> TerminalSession<B> {
     /// Returns the current viewport size.
     pub fn size(&self) -> Result<Size, B::Error> {
         self.backend.size()
+    }
+
+    /// Returns the current viewport with optional drawable pixel dimensions.
+    pub fn viewport(&self) -> Result<TerminalViewport, B::Error> {
+        self.backend.viewport()
     }
 
     /// Returns the desired state restored after resume.

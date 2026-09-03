@@ -176,9 +176,8 @@ cell fallback. Overlapping image placements follow paint order, so later
 placements appear above earlier placements, while native placements remain
 above fallback cells. Order between disjoint retained placements is not
 semantic and can differ after selective repaint. Partially clipped placements
-remain fallback-only because Kitty preserves image aspect ratio within its cell
-rectangle and the backend-neutral renderer does not know terminal cell pixel
-dimensions needed for an exact source crop.
+remain fallback-only because the renderer does not yet map the clipped cell
+rectangle to a matching source-pixel crop.
 
 ## Surfaces And Composition
 

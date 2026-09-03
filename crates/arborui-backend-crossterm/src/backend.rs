@@ -4,7 +4,8 @@ use arborui_core::{CursorState, CursorVisibility, Size};
 use arborui_render::FramePatch;
 use arborui_terminal::{
     AutowrapMode, Capabilities, ColorCapability, KeyboardCapability, KeyboardMode, MouseCapability,
-    MouseMode, ScreenMode, TerminalBackend, TerminalEvent, TerminalState, WriteOutcome,
+    MouseMode, ScreenMode, TerminalBackend, TerminalEvent, TerminalPixelSize, TerminalState,
+    TerminalViewport, WriteOutcome,
 };
 use crossterm::{
     QueueableCommand,
@@ -253,6 +254,15 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
         Ok(Size::new(width, height))
     }
 
+    fn viewport(&self) -> Result<TerminalViewport, Self::Error> {
+        if let Ok(window) = crossterm::terminal::window_size() {
+            if let Some(viewport) = reported_viewport(window) {
+                return Ok(viewport);
+            }
+        }
+        self.size().map(TerminalViewport::from_cells)
+    }
+
     fn capabilities(&self) -> &Capabilities {
         &self.capabilities
     }
@@ -446,6 +456,20 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
     }
 }
 
+fn reported_viewport(window: crossterm::terminal::WindowSize) -> Option<TerminalViewport> {
+    let cells = Size::new(window.columns, window.rows);
+    if cells.is_empty() {
+        return None;
+    }
+    if window.width == 0 || window.height == 0 {
+        return Some(TerminalViewport::from_cells(cells));
+    }
+    Some(TerminalViewport::with_pixels(
+        cells,
+        TerminalPixelSize::new(window.width, window.height),
+    ))
+}
+
 fn state_changed<T: PartialEq>(desired: T, active: T, confirmed: T) -> bool {
     desired != active || desired != confirmed
 }
@@ -552,6 +576,42 @@ mod tests {
     }
 
     #[test]
+    fn reported_viewport_discards_missing_pixel_dimensions() {
+        let cells = Size::new(80, 24);
+
+        assert_eq!(
+            reported_viewport(crossterm::terminal::WindowSize {
+                columns: 80,
+                rows: 24,
+                width: 800,
+                height: 600,
+            }),
+            Some(TerminalViewport::with_pixels(
+                cells,
+                TerminalPixelSize::new(800, 600),
+            ))
+        );
+        assert_eq!(
+            reported_viewport(crossterm::terminal::WindowSize {
+                columns: 80,
+                rows: 24,
+                width: 0,
+                height: 0,
+            }),
+            Some(TerminalViewport::from_cells(cells))
+        );
+        assert_eq!(
+            reported_viewport(crossterm::terminal::WindowSize {
+                columns: 0,
+                rows: 24,
+                width: 800,
+                height: 600,
+            }),
+            None
+        );
+    }
+
+    #[test]
     fn unsupported_hyperlink_capability_remains_disabled() -> io::Result<()> {
         let backend = CrosstermBackend::new(Vec::new())?.with_capabilities(Capabilities {
             hyperlinks: true,
@@ -634,8 +694,8 @@ mod tests {
         backend.restore()?;
         let output = backend.into_inner()?;
 
-        let upload = b"\x1b_Ga=t,f=32,t=d,s=1,v=1,I=1,q=2,m=0;AQIDBA==\x1b\\";
-        let deletion = b"\x1b_Ga=d,d=N,I=1,q=2\x1b\\";
+        let upload = b"\x1b_Ga=T,f=32,t=d,o=z,s=1,v=1,i=1,x=0,y=0,w=1,h=1,c=1,r=1,C=1,q=2,z=1;";
+        let deletion = b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
         let leave_alternate = b"\x1b[?1049l";
         assert!(output.windows(upload.len()).any(|window| window == upload));
         let delete_position = output
@@ -712,7 +772,7 @@ mod tests {
         assert!(backend.write_patch(frame.patch()).is_err());
         assert_eq!(backend.write_patch(frame.patch())?, WriteOutcome::Applied);
 
-        let deletion = b"\x1b_Ga=d,d=N,I=1,q=2\x1b\\";
+        let deletion = b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
         assert!(
             backend
                 .writer
@@ -726,7 +786,15 @@ mod tests {
     #[test]
     fn partial_image_write_is_aborted_before_retry_output() -> Result<(), Box<dyn std::error::Error>>
     {
-        let image = RgbaImage::new(1_024, 1, vec![0; 1_024 * 4])?;
+        let pixels = (0..1_024 * 4)
+            .scan(0x1234_5678_u32, |value, _| {
+                *value ^= *value << 13;
+                *value ^= *value >> 17;
+                *value ^= *value << 5;
+                Some(*value as u8)
+            })
+            .collect::<Vec<_>>();
+        let image = RgbaImage::new(1_024, 1, pixels)?;
         let mut renderer = Renderer::new(Size::new(1, 1), WidthPolicy::Unicode);
         let frame = renderer.prepare(Size::new(1, 1), CursorState::HIDDEN, |canvas| {
             canvas.draw_image(Rect::new(0, 0, 1, 1), &image)?;
@@ -744,7 +812,7 @@ mod tests {
         let retry_start = backend.writer.bytes.len();
         assert_eq!(backend.write_patch(frame.patch())?, WriteOutcome::Applied);
 
-        let recovery_and_delete = b"\x1b\\\x1b[?2026l\x1b_Ga=d,d=N,I=1,q=2\x1b\\";
+        let recovery_and_delete = b"\x1b\\\x1b[?2026l\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
         assert!(backend.writer.bytes[retry_start..].starts_with(recovery_and_delete));
         Ok(())
     }
@@ -774,7 +842,7 @@ mod tests {
         let retry_start = backend.writer.bytes.len();
         backend.restore()?;
 
-        let recovery_and_reentry = b"\x1b\\\x1b[?2026l\x1b[?1049h\x1b_Ga=d,d=N,I=1,q=2\x1b\\";
+        let recovery_and_reentry = b"\x1b\\\x1b[?2026l\x1b[?1049h\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
         assert!(backend.writer.bytes[retry_start..].starts_with(recovery_and_reentry));
         Ok(())
     }
@@ -796,7 +864,7 @@ mod tests {
             ..TerminalState::default()
         })?;
 
-        let recovery = b"\x1b\\\x1b[?2026l\x1b[?1049h\x1b_Ga=d,d=N,I=1,q=2\x1b\\";
+        let recovery = b"\x1b\\\x1b[?2026l\x1b[?1049h\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
         assert!(backend.writer.starts_with(recovery));
         Ok(())
     }

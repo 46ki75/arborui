@@ -7,7 +7,7 @@ mod session;
 mod state;
 
 pub use arborui_render::FramePatch;
-pub use backend::{TerminalBackend, WriteOutcome};
+pub use backend::{TerminalBackend, TerminalPixelSize, TerminalViewport, WriteOutcome};
 pub use capabilities::{Capabilities, ColorCapability, KeyboardCapability, MouseCapability};
 pub use event::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,

@@ -245,19 +245,28 @@ WezTerm, and VS Code environment hints can enable the feature only when no exclu
 remote or multiplexer environment is present.
 
 Kitty output is emitted only on the alternate screen. The backend sends decoded
-RGBA pixels with Kitty direct transfer (`t=d`, `f=32`), suppresses protocol
-responses with `q=2`, limits each base64-encoded payload chunk to 4096 bytes,
-and places images with `C=1`. Placement z-indexes preserve scene order above
-fallback cells. The backend uses Kitty image numbers, which are intended for
-clients that cannot synchronously obtain globally unique image IDs. Whole-scene
-updates delete the backend's prior ArborUI-owned image numbers before uploading
-and placing the desired scene. Kitty preserves aspect ratio and letterboxes or
-pillarboxes when necessary. After an uncertain write, ST terminates any partial
-APC, synchronized-update mode is explicitly ended, and image deletions abort an
-incomplete chunked upload before repaint cells are emitted. If a failed cleanup
-makes the active screen ambiguous, the backend re-enters the alternate screen
-before targeted deletion and then leaves it again, avoiding deletion of a
-main-screen image owned by another client.
+pixels as zlib-compressed Kitty direct transfers (`t=d`, `o=z`), using 24-bit
+RGB for opaque sources and 32-bit RGBA when alpha is present. It suppresses
+protocol responses with `q=2` and combines each source's first upload and
+placement with `a=T` and `C=1`. Direct payloads use one command because xterm.js
+does not reliably complete chunked image uploads. Placement z-indexes preserve scene order above
+fallback cells. The backend assigns Kitty image IDs because terminals including
+xterm.js cannot reliably resolve image numbers in separate placement commands.
+Complete repaints explicitly erase the terminal before restoring every cell so
+resize cannot retain stale image-tile metadata.
+Whole-scene updates delete the backend's prior ArborUI-owned image IDs before
+repainting the union of the old and new placement cells, then uploading and
+placing the desired scene. Repainting clears terminal-owned tile references that
+would otherwise appear as missing-image placeholders after a move or resize.
+The backend supplies both `c` and `r`, so normal Kitty placements scale to the
+complete cell rectangle. Applications that preserve a source aspect ratio must
+account for the terminal cell's pixel aspect when choosing that rectangle.
+After an uncertain write, ST terminates any partial APC, synchronized-update
+mode is explicitly ended, and image deletions abort an incomplete chunked upload
+before repaint cells are emitted. If a failed cleanup makes the active screen
+ambiguous, the backend re-enters the alternate screen before targeted deletion
+and then leaves it again, avoiding deletion of a main-screen image owned by
+another client.
 
 Kitty 0.48 rejects source dimensions above 10,000 pixels per axis. The
 Crossterm backend leaves those sources fallback-only rather than suppressing a
@@ -268,6 +277,12 @@ transport, animation, tmux placeholders, or main-screen images. Ordinary cell
 fallback content remains visible when graphics are disabled or unavailable.
 Restoration, suspension, and an alternate-to-main transition delete owned
 images before leaving the alternate screen.
+
+`TerminalBackend::viewport` augments cell dimensions with drawable pixel
+dimensions when the backend can report them. The Crossterm backend reads the
+PTY window size and discards zero pixel dimensions; callers must retain a
+fallback for terminals, operating systems, and indirect sessions that do not
+propagate this information.
 
 ## Suspend And Resume
 
