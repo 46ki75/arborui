@@ -86,8 +86,8 @@ Each crate owns tests for its contracts.
 ### `arborui-backend-crossterm`
 
 - Configured Kitty mode and conservative environment detection
-- Direct RGBA transfer framing, image-number addressing, ordered z-indexes, and
-  4096-byte encoded chunk limits
+- Target-sized direct RGB/RGBA transfer framing, adaptive compression,
+  image-number addressing, encoded-payload caching, and ordered z-indexes
 - Alternate-screen-only image output and cleanup-before-exit ordering
 - Partial-control-sequence recovery, interrupted-upload cleanup, and whole-scene
   replacement

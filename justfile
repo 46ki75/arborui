@@ -28,6 +28,9 @@ run-kitty-image:
 test-pty:
     cargo test -p arborui-backend-crossterm --test pty_lifecycle -- --ignored --test-threads=1
 
+kitty-image-encoding-metrics:
+    cargo test --release -p arborui-backend-crossterm --lib kitty_encoding_metrics -- --ignored --nocapture
+
 doc:
     RUSTDOCFLAGS="-D warnings" cargo doc --workspace --all-features --no-deps
 

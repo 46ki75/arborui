@@ -26,6 +26,7 @@ use crate::{
 
 const MAX_WORK_PER_TURN: usize = 1_024;
 const MAX_MESSAGES_PER_TURN: usize = 768;
+const MAX_RESIZE_LOOKAHEAD: usize = 256;
 const DEFAULT_EVENT_INGRESS_CAPACITY: usize = 1_024;
 
 /// Configuration for application runtime construction.
@@ -736,7 +737,11 @@ impl<A: Application> AppRunner<A> {
                             .poll_event(self.scheduler.wait_timeout(poll_interval))
                             .map_err(RuntimeError::Backend)?
                         {
+                            let (event, following) =
+                                coalesce_resize_events(session, event, &mut self.terminal_events)
+                                    .map_err(RuntimeError::Backend)?;
                             self.terminal_events.push_back(event);
+                            self.terminal_events.extend(following);
                         }
                     } else {
                         self.wake.wait(self.scheduler.wait_timeout(poll_interval));
@@ -755,8 +760,7 @@ impl<A: Application> AppRunner<A> {
                     .poll_event(Duration::ZERO)
                     .map_err(RuntimeError::Backend)?
                 {
-                    self.dispatch_terminal_event_with_recovery(event)
-                        .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))?;
+                    self.dispatch_polled_terminal_event(session, event)?;
                 }
                 continue;
             }
@@ -764,8 +768,7 @@ impl<A: Application> AppRunner<A> {
                 .poll_event(self.scheduler.wait_timeout(poll_interval))
                 .map_err(RuntimeError::Backend)?
             {
-                self.dispatch_terminal_event_with_recovery(event)
-                    .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))?;
+                self.dispatch_polled_terminal_event(session, event)?;
             }
         }
         Ok(())
@@ -821,6 +824,18 @@ impl<A: Application> AppRunner<A> {
             }
             Err(error) => Err(error),
         }
+    }
+
+    fn dispatch_polled_terminal_event<B: TerminalBackend>(
+        &mut self,
+        session: &mut TerminalSession<B>,
+        event: TerminalEvent,
+    ) -> Result<(), RuntimeError<B::Error>> {
+        let (event, following) = coalesce_resize_events(session, event, &mut self.terminal_events)
+            .map_err(RuntimeError::Backend)?;
+        self.terminal_events.extend(following);
+        self.dispatch_terminal_event_with_recovery(event)
+            .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))
     }
 
     fn synchronize_terminal<B: TerminalBackend>(
@@ -909,6 +924,30 @@ impl<A: Application> AppRunner<A> {
         self.messages.extend(outcome.messages);
         Ok((view_construction, refresh_started.elapsed()))
     }
+}
+
+fn coalesce_resize_events<B: TerminalBackend>(
+    session: &mut TerminalSession<B>,
+    mut event: TerminalEvent,
+    retained: &mut VecDeque<TerminalEvent>,
+) -> Result<(TerminalEvent, Option<TerminalEvent>), B::Error> {
+    if !matches!(event, TerminalEvent::Resize(_)) {
+        return Ok((event, None));
+    }
+    for _ in 0..MAX_RESIZE_LOOKAHEAD {
+        let next = match session.poll_event(Duration::ZERO) {
+            Ok(next) => next,
+            Err(error) => {
+                retained.push_front(event);
+                return Err(error);
+            }
+        };
+        match next {
+            Some(next @ TerminalEvent::Resize(_)) => event = next,
+            following => return Ok((event, following)),
+        }
+    }
+    Ok((event, None))
 }
 
 fn render_timings(
@@ -1255,6 +1294,7 @@ mod tests {
         outcomes: VecDeque<WriteOutcome>,
         events: VecDeque<TerminalEvent>,
         patches: Vec<FramePatch>,
+        fail_next_poll: bool,
         fail_next_write: bool,
     }
 
@@ -1271,6 +1311,7 @@ mod tests {
                 outcomes: outcomes.into_iter().collect(),
                 events: VecDeque::new(),
                 patches: Vec::new(),
+                fail_next_poll: false,
                 fail_next_write: false,
             }));
             (
@@ -1296,6 +1337,9 @@ mod tests {
 
         fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if std::mem::take(&mut state.fail_next_poll) {
+                return Err(io::Error::other("injected poll failure"));
+            }
             Ok(state.events.pop_front())
         }
 
@@ -1401,6 +1445,117 @@ mod tests {
             TerminalSession::open(backend, TerminalState::default())?,
             state,
         ))
+    }
+
+    #[test]
+    fn consecutive_terminal_resizes_are_coalesced_before_dispatch()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let (mut terminal, state) = session([])?;
+        let key = KeyEvent {
+            code: KeyCode::Enter,
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::default(),
+        };
+        {
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            state.events.extend([
+                TerminalEvent::Resize(Size::new(20, 5)),
+                TerminalEvent::Resize(Size::new(40, 10)),
+                TerminalEvent::Key(key),
+            ]);
+        }
+        let first = terminal
+            .poll_event(Duration::ZERO)?
+            .ok_or("missing first terminal event")?;
+
+        let mut retained = VecDeque::new();
+        let (event, following) = coalesce_resize_events(&mut terminal, first, &mut retained)?;
+
+        assert!(matches!(
+            event,
+            TerminalEvent::Resize(Size {
+                width: 40,
+                height: 10
+            })
+        ));
+        assert!(matches!(following, Some(TerminalEvent::Key(event)) if event == key));
+        assert!(
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .events
+                .is_empty()
+        );
+        assert!(retained.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn resize_lookahead_is_bounded() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut terminal, state) = session([])?;
+        {
+            let mut state = state.lock().unwrap_or_else(|error| error.into_inner());
+            for width in 1..=MAX_RESIZE_LOOKAHEAD + 1 {
+                state
+                    .events
+                    .push_back(TerminalEvent::Resize(Size::new(width as u16, 1)));
+            }
+        }
+        let mut retained = VecDeque::new();
+
+        let (event, following) = coalesce_resize_events(
+            &mut terminal,
+            TerminalEvent::Resize(Size::new(1, 1)),
+            &mut retained,
+        )?;
+
+        assert!(matches!(
+            event,
+            TerminalEvent::Resize(Size {
+                width: 256,
+                height: 1
+            })
+        ));
+        assert!(following.is_none());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .events
+                .len(),
+            1
+        );
+        assert!(retained.is_empty());
+        Ok(())
+    }
+
+    #[test]
+    fn resize_is_retained_when_lookahead_polling_fails() -> Result<(), Box<dyn std::error::Error>> {
+        let (mut terminal, state) = session([])?;
+        state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .fail_next_poll = true;
+        let mut retained = VecDeque::new();
+
+        assert!(
+            coalesce_resize_events(
+                &mut terminal,
+                TerminalEvent::Resize(Size::new(40, 10)),
+                &mut retained,
+            )
+            .is_err()
+        );
+
+        assert!(matches!(
+            retained.pop_front(),
+            Some(TerminalEvent::Resize(Size {
+                width: 40,
+                height: 10
+            }))
+        ));
+        Ok(())
     }
 
     #[test]

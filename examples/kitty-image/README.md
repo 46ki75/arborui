@@ -31,17 +31,30 @@ order. Select an image with the list, arrow keys, or `p` and `n`:
 cargo run -p arborui-example-kitty-image -- --auto ./photos
 ```
 
+Use an optimized build for performance comparisons with other image clients:
+
+```console
+cargo run --release -p arborui-example-kitty-image -- --auto ./photos
+```
+
+The ignored release-mode encoding metric can be run from the repository root
+with `just kitty-image-encoding-metrics`. Compare terminal transport using
+`kitten icat --transfer-mode=stream` so both clients use direct payloads.
+
 Directory loading is bounded to 256 images and 256 MiB of decoded RGBA pixels.
 Subdirectories and files with unsupported extensions are ignored; a supported
 file that fails to decode stops startup with its path in the error.
 
 Input is detected from its contents rather than its extension. Decoded images
 are normalized to oriented sRGB RGBA and retain the renderer's 64 MiB decoded
-payload limit. Sources retain their decoded pixel resolution for terminal
-transfer; only the cell placement is fitted to the preview area. SVG and other
-vector formats are not supported. When the terminal or PTY reports drawable
-pixel dimensions, the demo uses the measured cell aspect ratio to avoid forced
-stretching. Otherwise, it falls back to cells twice as tall as they are wide.
+payload limit. Sources retain their decoded pixel resolution in memory. When
+the terminal or PTY reports drawable pixel dimensions, the backend downsamples
+the transferred copy to a slightly rounded-up preview size without upscaling;
+otherwise it transfers the full source. Encoded copies are cached across
+movement, nearby resize sizes, and image reselection. The measured cell aspect
+ratio also prevents forced stretching. Without pixel dimensions, the viewer
+falls back to cells twice as tall as they are wide. SVG and other vector formats
+are not supported.
 
 If conservative environment detection does not recognize a compatible
 terminal, explicitly enable output:

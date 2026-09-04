@@ -327,19 +327,23 @@ impl Application for KittyImageDemo {
     ) -> Command<Self::Message> {
         match message {
             Message::PreviousImage => {
-                self.source_index = if self.source_index == 0 {
-                    self.sources.len() - 1
-                } else {
-                    self.source_index - 1
-                };
-                context.invalidate(Invalidation::Layout);
+                if self.sources.len() > 1 {
+                    self.source_index = if self.source_index == 0 {
+                        self.sources.len() - 1
+                    } else {
+                        self.source_index - 1
+                    };
+                    context.invalidate(Invalidation::Layout);
+                }
             }
             Message::NextImage => {
-                self.source_index = (self.source_index + 1) % self.sources.len();
-                context.invalidate(Invalidation::Layout);
+                if self.sources.len() > 1 {
+                    self.source_index = (self.source_index + 1) % self.sources.len();
+                    context.invalidate(Invalidation::Layout);
+                }
             }
             Message::SelectImage(index) => {
-                if index < self.sources.len() {
+                if index < self.sources.len() && index != self.source_index {
                     self.source_index = index;
                     context.invalidate(Invalidation::Layout);
                 }
@@ -357,8 +361,10 @@ impl Application for KittyImageDemo {
                 context.invalidate(Invalidation::Recompose);
             }
             Message::Resize(size) => {
-                self.viewport = size;
-                context.invalidate(Invalidation::Layout);
+                if size != self.viewport {
+                    self.viewport = size;
+                    context.invalidate(Invalidation::Layout);
+                }
             }
             Message::Quit => return Command::quit(),
         }
@@ -622,6 +628,19 @@ mod tests {
 
         app.send(Message::PreviousImage);
         assert_eq!(app.frame().images().placements()[0].image().id(), first_id);
+        Ok(())
+    }
+
+    #[test]
+    fn selecting_the_active_image_from_input_does_not_commit_another_frame()
+    -> Result<(), arborui::ImageError> {
+        let viewport = Size::new(80, 30);
+        let mut app = TestApp::new(KittyImageDemo::new("headless test", viewport)?, viewport);
+
+        let report = app.key(KeyCode::Home);
+
+        assert_eq!(report.updates, 1);
+        assert_eq!(report.committed_frames, 0);
         Ok(())
     }
 

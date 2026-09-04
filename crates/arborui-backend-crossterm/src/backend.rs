@@ -413,7 +413,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             .validate_for_width_policy(self.capabilities.width_policy)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
         let empty_scene = arborui_render::ImageScene::new();
-        let image_update = (self.capabilities.kitty_graphics
+        let image_scene = (self.capabilities.kitty_graphics
             && self.active.screen == ScreenMode::Alternate)
             .then(|| {
                 patch
@@ -421,8 +421,15 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
                     .as_ref()
                     .or_else(|| patch.full_repaint.then_some(&empty_scene))
             })
-            .flatten()
-            .map(|scene| self.kitty.prepare(scene));
+            .flatten();
+        let image_viewport = image_scene.and_then(|_| {
+            crossterm::terminal::window_size()
+                .ok()
+                .and_then(reported_viewport)
+        });
+        let image_update = image_scene
+            .map(|scene| self.kitty.prepare_with_viewport(scene, image_viewport))
+            .transpose()?;
         let output_result = output::write_patch_with_images(
             &mut self.writer,
             patch,
@@ -694,7 +701,7 @@ mod tests {
         backend.restore()?;
         let output = backend.into_inner()?;
 
-        let upload = b"\x1b_Ga=T,f=32,t=d,o=z,s=1,v=1,i=1,x=0,y=0,w=1,h=1,c=1,r=1,C=1,q=2,z=1;";
+        let upload = b"\x1b_Ga=T,f=32,t=d,s=1,v=1,i=1,x=0,y=0,w=1,h=1,c=1,r=1,C=1,q=2,z=1;";
         let deletion = b"\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
         let leave_alternate = b"\x1b[?1049l";
         assert!(output.windows(upload.len()).any(|window| window == upload));
@@ -855,7 +862,7 @@ mod tests {
             ImageScene::from_placements([ImagePlacement::new(image, Rect::new(0, 0, 1, 1))]);
         let mut backend =
             CrosstermBackend::new(Vec::new())?.with_kitty_graphics(KittyGraphicsMode::Enabled);
-        let _update = backend.kitty.prepare(&scene);
+        let _update = backend.kitty.prepare_with_viewport(&scene, None)?;
         backend.kitty.mark_stream_uncertain();
 
         backend.apply_state(&TerminalState {
