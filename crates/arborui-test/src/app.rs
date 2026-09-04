@@ -52,7 +52,7 @@ pub struct SettleReport {
 /// Failure while driving a headless application.
 #[derive(Debug)]
 pub enum TestError {
-    /// A scripted terminal write failed.
+    /// In-memory terminal output failed.
     Backend(TestBackendError),
     /// UI preparation failed.
     Ui(UiError),

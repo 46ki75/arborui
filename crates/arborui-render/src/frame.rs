@@ -9,7 +9,7 @@ use std::{
 };
 
 use arborui_core::{CursorState, Point, Size, Style};
-use arborui_text::{WidthPolicy, graphemes};
+use arborui_text::{WidthPolicy, graphemes, is_line_break};
 
 use crate::{
     Buffer, BufferError, Canvas, Cell, CellContent, DrawError, GraphemeId, GraphemeStore,
@@ -471,7 +471,10 @@ impl FramePatch {
                 let PatchCellContent::Grapheme { id, text, width } = &cell.content else {
                     continue;
                 };
-                if text.chars().any(char::is_control) {
+                if text
+                    .chars()
+                    .any(|character| character.is_control() || is_line_break(character))
+                {
                     return Err(FramePatchValidationError::InvalidGraphemeText {
                         run: run_index,
                         cell: cell_index,
@@ -1604,6 +1607,16 @@ mod tests {
             patch.validate_for_width_policy(WidthPolicy::Unicode),
             Err(FramePatchValidationError::InvalidGraphemeText { run: 0, cell: 0 })
         );
+
+        for invalid in ["\u{1b}", "\u{85}", "\u{2028}", "\u{2029}"] {
+            if let PatchCellContent::Grapheme { text, .. } = &mut patch.runs[0].cells[0].content {
+                *text = Arc::from(invalid);
+            }
+            assert_eq!(
+                patch.validate_for_width_policy(WidthPolicy::Unicode),
+                Err(FramePatchValidationError::InvalidGraphemeText { run: 0, cell: 0 })
+            );
+        }
         Ok(())
     }
 

@@ -21,14 +21,15 @@ change before 1.0 and must be called out in release notes.
 
 | Environment | Validation | Status |
 | --- | --- | --- |
-| Linux PTY | Unit tests plus native PTY lifecycle and exact termios restoration | Tested |
-| macOS PTY | Native PTY lifecycle in CI | Tested |
-| Windows ConPTY | Native ConPTY process and cleanup-sequence lifecycle in CI | Tested |
+| Linux PTY | Full workspace gate plus native PTY lifecycle and exact termios restoration | Tested |
+| macOS PTY | All-target workspace check plus native PTY lifecycle and exact termios restoration | Tested |
+| Windows ConPTY | All-target workspace check plus native ConPTY process and cleanup-sequence lifecycle | Tested |
 | tmux | No automated compatibility run | Experimental |
 | Specific terminal emulators | No automated visual-state run | Experimental |
 
-The PTY matrix verifies normal RAII completion and ordered alternate-screen
-cleanup. Unix additionally compares termios before and after the session.
+The PTY matrix verifies normal RAII completion, restore-first panic reporting,
+and ordered alternate-screen cleanup. Unix additionally compares termios before
+and after the session.
 ConPTY does not currently assert exact Windows console-mode equivalence. A PTY
 is a transport and does not model screen contents, autowrap, scrolling, cursor
 rendering, or terminal-rendered image pixels. PTY tests can validate Kitty
@@ -47,8 +48,11 @@ command bytes and cleanup ordering, but not the resulting pixels.
   terminates at its default disposition without restoring the terminal.
 - `Ctrl+C` is handled as a key event, not a signal, because raw mode clears
   `ISIG`. `InterruptPolicy` governs it on every platform.
-- `panic=unwind` runs RAII cleanup. Abort, `SIGKILL`, power loss, and terminal
-  host failure cannot be restored by application code.
+- `panic=unwind` restores the terminal before resuming an application-execution
+  panic and re-reports string payloads after leaving the alternate screen.
+  The post-restoration fallback cannot reproduce source locations or backtraces;
+  custom hooks still run normally before unwinding. Abort, `SIGKILL`, power
+  loss, and terminal host failure cannot be restored by application code.
 - Cursor visibility and shape, title, and autowrap are restored to conservative
   usable defaults, not queried pre-session values.
 - Capability detection uses environment hints for color. Enhanced keyboard,

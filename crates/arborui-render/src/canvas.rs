@@ -1,7 +1,7 @@
 use std::fmt;
 
 use arborui_core::{Point, Rect, Style};
-use arborui_text::{WidthPolicy, graphemes};
+use arborui_text::{WidthPolicy, graphemes, is_line_break};
 
 use crate::{
     Buffer, BufferError, CellContent, GraphemeStore, GraphemeStoreError, HitId, HitMap,
@@ -283,7 +283,7 @@ impl<'a> Canvas<'a> {
         Ok(true)
     }
 
-    /// Draws text with CR, LF, and CRLF interpreted as line separators.
+    /// Draws text with mandatory Unicode line breaks interpreted as line separators.
     pub fn draw_text(
         &mut self,
         point: Point,
@@ -296,11 +296,7 @@ impl<'a> Canvas<'a> {
         let mut draw = TextDraw::default();
 
         for grapheme in graphemes(text, self.width_policy) {
-            if grapheme
-                .text
-                .chars()
-                .any(|character| matches!(character, '\r' | '\n'))
-            {
+            if grapheme.text.chars().any(is_line_break) {
                 cursor.x = line_start;
                 cursor.y = cursor.y.saturating_add(1);
                 continue;
@@ -440,6 +436,48 @@ mod tests {
 
         assert!(!canvas.draw_grapheme(Point::ORIGIN, "界", Style::default(), None)?);
         assert!(buffer.cells().iter().all(|cell| *cell == Cell::default()));
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_nonprinting_graphemes() {
+        let mut buffer = Buffer::new(Size::new(1, 1));
+        let mut store = GraphemeStore::new();
+        let mut canvas = Canvas::new(&mut buffer, &mut store, WidthPolicy::Unicode);
+
+        for value in ["\u{1b}", "\u{85}", "\u{2028}", "\u{2029}"] {
+            assert_eq!(
+                canvas.draw_grapheme(Point::ORIGIN, value, Style::default(), None),
+                Err(DrawError::InvalidGrapheme)
+            );
+        }
+    }
+
+    #[test]
+    fn draws_mandatory_breaks_and_omits_other_controls() -> Result<(), DrawError> {
+        let mut buffer = Buffer::new(Size::new(2, 3));
+        let mut store = GraphemeStore::new();
+        let mut canvas = Canvas::new(&mut buffer, &mut store, WidthPolicy::Unicode);
+
+        let draw = canvas.draw_text(
+            Point::ORIGIN,
+            "a\u{1b}b\u{b}c\u{2028}d",
+            Style::default(),
+            None,
+        )?;
+
+        assert_eq!(draw.graphemes, 4);
+        let visible = [
+            Point::new(0, 0),
+            Point::new(1, 0),
+            Point::new(0, 1),
+            Point::new(0, 2),
+        ]
+        .map(|point| match buffer.get(point).map(|cell| cell.content) {
+            Some(CellContent::Grapheme { id, .. }) => store.get(id).map(AsRef::as_ref),
+            _ => Err(crate::GraphemeStoreError::InvalidGrapheme),
+        });
+        assert_eq!(visible, [Ok("a"), Ok("b"), Ok("c"), Ok("d")]);
         Ok(())
     }
 

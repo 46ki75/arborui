@@ -36,7 +36,8 @@ arborui-layout            -> arborui-core
 arborui-terminal          -> arborui-core, arborui-render, arborui-text
 arborui-backend-crossterm -> arborui-core, arborui-render, arborui-terminal
 arborui-ui                -> arborui-core, arborui-text, arborui-render, arborui-layout
-arborui-widgets           -> arborui-core, arborui-text, arborui-layout, arborui-ui
+arborui-widgets           -> arborui-core, arborui-text, arborui-render, arborui-layout,
+                            arborui-ui
 arborui-runtime           -> arborui-core, arborui-ui, arborui-render, arborui-terminal
 arborui-test              -> arborui-core, arborui-text, arborui-ui, arborui-render,
                            arborui-terminal, arborui-runtime

@@ -47,15 +47,16 @@ continuation is covered by a preceding matching wide `Grapheme` in the same
 contains one complete run per row. Publicly constructed patches should be
 checked with `FramePatch::validate_for_width_policy`, using
 `Capabilities::width_policy`, before any bytes are written. This also rejects
-empty, multiple, or control grapheme text and declared widths that differ from
-the selected policy, as well as conflicting ID-to-text mappings visible within
-one patch. Renderer-generated IDs are stable within that renderer's patch
-stream. Producers of manually constructed patch streams must preserve each
-ID-to-text mapping across patches because per-patch validation cannot detect a
-conflict split across patches. A validation or output failure must not be
-reported as an applied patch; physical state remains unknown under the existing
-transactional write contract. Policy-independent logical replay can use the
-structural `FramePatch::validate` check performed by `apply_to`.
+empty, multiple, control, or mandatory-line-break grapheme text and declared
+widths that differ from the selected policy, as well as conflicting ID-to-text
+mappings visible within one patch. Renderer-generated IDs are stable within
+that renderer's patch stream. Producers of manually constructed patch streams
+must preserve each ID-to-text mapping across patches because per-patch
+validation cannot detect a conflict split across patches. A validation or
+output failure must not be reported as an applied patch; physical state remains
+unknown under the existing transactional write contract. Policy-independent
+logical replay can use the structural `FramePatch::validate` check performed by
+`apply_to`.
 
 ## Normalized Input
 
@@ -330,9 +331,14 @@ Signal integration must avoid process-global handler conflicts. The design
 should support one explicit owner and make limitations clear when multiple
 sessions exist in one process.
 
-Panic hooks are not sufficient by themselves. The RAII session remains the
-primary restoration mechanism, with optional process-level integration in the
-runtime.
+Panic hooks are not sufficient by themselves. With `panic=unwind`, the runtime
+catches application execution panics, restores and drops the terminal session,
+then resumes the original panic. Because the original hook ran on the alternate
+screen, `run_with_options` writes a control-escaped fallback containing a string
+panic payload after restoration; source location and backtrace metadata cannot
+be replayed. The runtime does not replace the process-global hook. RAII remains
+the cleanup fallback, while `panic=abort` and external termination signals still
+require future explicit process-level integration.
 
 ## Crossterm Backend
 

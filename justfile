@@ -10,6 +10,9 @@ fmt-check:
     cargo fmt --all -- --check
     pnpm run lint
 
+check:
+    cargo check --workspace --all-targets --all-features
+
 lint:
     cargo clippy --workspace --all-targets --all-features -- -D warnings
 
@@ -53,7 +56,7 @@ coverage: test-cov
 coverage-html: test-cov
     cargo llvm-cov report --html --open
 
-coverage-ci: test-cov
+coverage-lcov: test-cov
     cargo llvm-cov report --lcov --output-path lcov.info
 
 bench-smoke:

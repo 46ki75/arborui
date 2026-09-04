@@ -8,5 +8,6 @@ mod measure;
 
 pub use edit::{ByteOffset, Selection, TextBuffer, TextEdit, TextMovement};
 pub use measure::{
-    Grapheme, Graphemes, TextMetrics, WidthPolicy, grapheme_width, graphemes, measure,
+    Grapheme, Graphemes, TextMetrics, WidthPolicy, grapheme_width, graphemes, is_line_break,
+    measure,
 };

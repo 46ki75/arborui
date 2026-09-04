@@ -92,6 +92,9 @@ impl<'a, Message> Element<'a, Message> {
     }
 
     /// Creates a borrowed text leaf.
+    ///
+    /// Rendering interprets mandatory Unicode line breaks and omits tabs and
+    /// other control characters from terminal output.
     #[must_use]
     pub fn text(text: &'a str) -> Self {
         Self {

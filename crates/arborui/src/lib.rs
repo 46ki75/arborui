@@ -1,13 +1,4 @@
-//! Rust-native terminal user interface primitives.
-//!
-//! The facade currently exposes foundational [`core`], Unicode [`text`],
-//! cell-based [`render`], layout, retained [`ui`], backend-neutral
-//! [`terminal`], application [`runtime`], and controlled [`widgets`] APIs.
-//!
-//! The default `crossterm` feature exports `CrosstermBackend`. Disable
-//! default features when providing another terminal backend.
-//! The non-default `image-decoding` feature exports [`image_decoder`] for
-//! converting common encoded raster formats into [`RgbaImage`].
+#![doc = include_str!(env!("ARBORUI_README"))]
 
 /// Foundational geometry, color, style, and cursor types.
 pub use arborui_core as core;
@@ -54,7 +45,7 @@ pub use arborui_terminal::{
 };
 pub use arborui_text::{
     ByteOffset, Selection, TextBuffer, TextEdit, TextMetrics, TextMovement, WidthPolicy,
-    grapheme_width, graphemes, measure,
+    grapheme_width, graphemes, is_line_break, measure,
 };
 pub use arborui_ui::{
     DispatchOutcome, Element, EventContext, EventPhase, FocusChange, FocusError, Invalidation, Key,

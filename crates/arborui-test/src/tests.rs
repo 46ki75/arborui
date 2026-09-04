@@ -89,6 +89,37 @@ struct ImageApp {
     image: RgbaImage,
 }
 
+struct UnsafeTextApp;
+
+impl Application for UnsafeTextApp {
+    type Message = ();
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message> {
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        Element::text("a\u{1b}b\u{b}c\u{2028}d")
+    }
+}
+
+#[test]
+fn application_text_omits_controls_and_honors_mandatory_breaks() {
+    for policy in [WidthPolicy::Unicode, WidthPolicy::Cjk, WidthPolicy::WcWidth] {
+        let app = TestApp::with_width_policy(UnsafeTextApp, Size::new(2, 3), policy);
+        assert_eq!(app.frame().characters(), "ab\nc \nd ");
+        assert!(
+            app.frame_patches()
+                .iter()
+                .all(|patch| patch.validate_for_width_policy(policy).is_ok())
+        );
+    }
+}
+
 impl Application for ImageApp {
     type Message = RgbaImage;
 

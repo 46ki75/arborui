@@ -1,6 +1,8 @@
 use std::{
+    any::Any,
     collections::VecDeque,
     fmt,
+    io::{self, Write},
     num::NonZeroUsize,
     sync::Arc,
     time::{Duration, Instant},
@@ -9,7 +11,7 @@ use std::{
 use arborui_core::Size;
 use arborui_render::Renderer;
 use arborui_terminal::{
-    TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
+    ScreenMode, TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
 use arborui_ui::{
     Invalidation, KeyAction, PreparedUiFrame, ReconcileError, UiCommitError, UiError, UiEvent,
@@ -1061,6 +1063,8 @@ fn render_timings(
 /// The renderer owns and repaints the complete viewport. Use
 /// [`ScreenMode::Alternate`](arborui_terminal::ScreenMode::Alternate); main-screen
 /// inline regions and native scrollback require a different rendering contract.
+/// If the application panics while unwinding is enabled, the runtime restores
+/// the terminal before resuming the original panic.
 pub fn run<A, B>(
     application: A,
     backend: B,
@@ -1081,6 +1085,11 @@ where
 }
 
 /// Configured variant of [`run`].
+///
+/// For an alternate-screen session, a panic is re-reported after restoration
+/// because the original panic hook ran while the alternate screen was active.
+/// This fallback preserves string payloads but cannot reproduce hook metadata
+/// such as the source location or backtrace.
 pub fn run_with_options<A, B>(
     application: A,
     backend: B,
@@ -1095,7 +1104,13 @@ where
     let mut session = TerminalSession::open(backend, desired).map_err(RuntimeError::Backend)?;
     let mut runner = AppRunner::from_terminal_with_options(application, &session, options)
         .map_err(RuntimeError::Backend)?;
-    let result = runner.run_terminal(&mut session, poll_interval);
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        runner.run_terminal(&mut session, poll_interval)
+    }));
+    let result = match result {
+        Ok(result) => result,
+        Err(payload) => restore_and_resume_panic(session, payload),
+    };
     match result {
         Ok(()) => session.restore().map_err(RuntimeError::Backend)?,
         Err(error) => {
@@ -1109,6 +1124,40 @@ where
         }
     }
     Ok(runner.into_application())
+}
+
+fn restore_and_resume_panic<B: TerminalBackend>(
+    mut session: TerminalSession<B>,
+    payload: Box<dyn Any + Send>,
+) -> ! {
+    let report_after_restore = session.desired_state().screen == ScreenMode::Alternate;
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| session.restore()));
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(session)));
+
+    if report_after_restore {
+        report_restored_panic(payload.as_ref());
+    }
+    std::panic::resume_unwind(payload)
+}
+
+fn report_restored_panic(payload: &(dyn Any + Send)) {
+    let mut stderr = io::stderr().lock();
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        let _ = writeln!(
+            stderr,
+            "arborui: terminal restored after panic: {message:?}"
+        );
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        let _ = writeln!(
+            stderr,
+            "arborui: terminal restored after panic: {message:?}"
+        );
+    } else {
+        let _ = writeln!(
+            stderr,
+            "arborui: terminal restored after panic: <non-string payload>"
+        );
+    }
 }
 
 #[cfg(test)]
@@ -1502,6 +1551,72 @@ mod tests {
 
     struct DualFailureBackend {
         capabilities: Capabilities,
+    }
+
+    struct PanicApp {
+        lifecycle: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl Application for PanicApp {
+        type Message = ();
+
+        fn update(
+            &mut self,
+            _message: Self::Message,
+            _context: &mut UpdateContext<Self::Message>,
+        ) -> Command<Self::Message> {
+            Command::none()
+        }
+
+        fn view(&self) -> Element<'_, Self::Message> {
+            panic!("panic payload marker")
+        }
+    }
+
+    impl Drop for PanicApp {
+        fn drop(&mut self) {
+            self.lifecycle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push("application dropped");
+        }
+    }
+
+    struct PanicBackend {
+        capabilities: Capabilities,
+        lifecycle: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl TerminalBackend for PanicBackend {
+        type Error = io::Error;
+
+        fn size(&self) -> Result<Size, Self::Error> {
+            Ok(Size::new(8, 2))
+        }
+
+        fn capabilities(&self) -> &Capabilities {
+            &self.capabilities
+        }
+
+        fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
+            Ok(None)
+        }
+
+        fn apply_state(&mut self, _desired: &TerminalState) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn write_patch(&mut self, _patch: &FramePatch) -> Result<WriteOutcome, Self::Error> {
+            Ok(WriteOutcome::Applied)
+        }
+
+        fn restore(&mut self) -> Result<(), Self::Error> {
+            self.lifecycle
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push("terminal restored");
+            Ok(())
+        }
     }
 
     struct ResumeCleanupFailureBackend {
@@ -2222,6 +2337,39 @@ mod tests {
             panic!("expected the original backend failure");
         };
         assert_eq!(runtime_error.to_string(), "poll failure");
+    }
+
+    #[test]
+    fn panic_restores_before_dropping_the_application_and_preserves_payload() {
+        let lifecycle = Arc::new(Mutex::new(Vec::new()));
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe({
+            let lifecycle = Arc::clone(&lifecycle);
+            move || {
+                let _ = run(
+                    PanicApp {
+                        lifecycle: Arc::clone(&lifecycle),
+                    },
+                    PanicBackend {
+                        capabilities: Capabilities::default(),
+                        lifecycle,
+                    },
+                    TerminalState::fullscreen(),
+                    Duration::ZERO,
+                );
+            }
+        }));
+        let Err(payload) = panic else {
+            panic!("application panic must resume after terminal restoration");
+        };
+
+        assert_eq!(
+            payload.downcast_ref::<&str>(),
+            Some(&"panic payload marker")
+        );
+        assert_eq!(
+            *lifecycle.lock().unwrap_or_else(|error| error.into_inner()),
+            ["terminal restored", "application dropped"]
+        );
     }
 
     #[test]

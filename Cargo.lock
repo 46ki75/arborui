@@ -46,6 +46,7 @@ dependencies = [
  "arborui-render",
  "arborui-runtime",
  "arborui-terminal",
+ "arborui-test",
  "arborui-text",
  "arborui-ui",
  "arborui-widgets",
@@ -58,8 +59,10 @@ version = "0.1.0"
 dependencies = [
  "arborui-core",
  "arborui-render",
+ "arborui-runtime",
  "arborui-terminal",
  "arborui-text",
+ "arborui-ui",
  "base64",
  "crossterm",
  "flate2",

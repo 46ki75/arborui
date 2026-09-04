@@ -518,7 +518,7 @@ mod tests {
             Ok(())
         })?;
 
-        for malformed_text in ["界", "ab", "\n"] {
+        for malformed_text in ["界", "ab", "\n", "\u{1b}", "\u{85}", "\u{2028}", "\u{2029}"] {
             let mut malformed = frame.patch().clone();
             let PatchCellContent::Grapheme { text, .. } = &mut malformed.runs[0].cells[0].content
             else {

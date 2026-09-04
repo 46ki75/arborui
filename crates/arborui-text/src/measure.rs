@@ -66,6 +66,17 @@ pub struct TextMetrics {
     pub height: usize,
 }
 
+/// Returns whether `character` is a mandatory Unicode line break.
+///
+/// This includes LF, VT, FF, CR, NEL, line separator, and paragraph separator.
+#[must_use]
+pub const fn is_line_break(character: char) -> bool {
+    matches!(
+        character,
+        '\n' | '\u{b}' | '\u{c}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'
+    )
+}
+
 /// Iterates over the extended grapheme clusters in `text`.
 #[must_use]
 pub fn graphemes(text: &str, policy: WidthPolicy) -> Graphemes<'_> {
@@ -77,13 +88,14 @@ pub fn graphemes(text: &str, policy: WidthPolicy) -> Graphemes<'_> {
 
 /// Estimates the display width of one grapheme cluster.
 ///
-/// Line separators and tabs have width zero. Higher layers handle line breaks
-/// and tab expansion because their widths depend on layout context.
+/// Mandatory line separators, tabs, and other controls have width zero. Higher
+/// layers handle line breaks and tab expansion because they depend on layout
+/// context.
 #[must_use]
 pub fn grapheme_width(grapheme: &str, policy: WidthPolicy) -> usize {
     if grapheme
         .chars()
-        .any(|character| matches!(character, '\r' | '\n' | '\t'))
+        .any(|character| character == '\t' || character.is_control() || is_line_break(character))
     {
         return 0;
     }
@@ -100,8 +112,8 @@ pub fn grapheme_width(grapheme: &str, policy: WidthPolicy) -> usize {
 
 /// Measures a possibly multiline string.
 ///
-/// Empty text occupies one empty logical line. Both LF and CRLF create one new
-/// line; standalone carriage returns are also treated as line separators.
+/// Empty text occupies one empty logical line. Mandatory Unicode line breaks
+/// create one new line, with CRLF treated as one grapheme and one transition.
 #[must_use]
 pub fn measure(text: &str, policy: WidthPolicy) -> TextMetrics {
     let mut width = 0;
@@ -109,11 +121,7 @@ pub fn measure(text: &str, policy: WidthPolicy) -> TextMetrics {
     let mut height = 1;
 
     for grapheme in graphemes(text, policy) {
-        if grapheme
-            .text
-            .chars()
-            .any(|character| matches!(character, '\r' | '\n'))
-        {
+        if grapheme.text.chars().any(is_line_break) {
             width = width.max(line_width);
             line_width = 0;
             height += 1;
@@ -177,5 +185,45 @@ mod tests {
                 height: 1,
             }
         );
+    }
+
+    #[test]
+    fn controls_are_zero_width_under_every_policy() {
+        for policy in [WidthPolicy::Unicode, WidthPolicy::Cjk, WidthPolicy::WcWidth] {
+            for scalar in (0..=0x1f).chain(0x7f..=0x9f) {
+                let Some(control) = char::from_u32(scalar) else {
+                    continue;
+                };
+                assert_eq!(grapheme_width(control.encode_utf8(&mut [0; 4]), policy), 0);
+            }
+            assert_eq!(
+                measure("a\u{1b}b", policy),
+                TextMetrics {
+                    width: 2,
+                    height: 1,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn mandatory_breaks_create_logical_lines_under_every_policy() {
+        for policy in [WidthPolicy::Unicode, WidthPolicy::Cjk, WidthPolicy::WcWidth] {
+            for line_break in [
+                '\n', '\u{b}', '\u{c}', '\r', '\u{85}', '\u{2028}', '\u{2029}',
+            ] {
+                assert_eq!(
+                    grapheme_width(line_break.encode_utf8(&mut [0; 4]), policy),
+                    0
+                );
+                assert_eq!(
+                    measure(&format!("a{line_break}b"), policy),
+                    TextMetrics {
+                        width: 1,
+                        height: 2,
+                    }
+                );
+            }
+        }
     }
 }

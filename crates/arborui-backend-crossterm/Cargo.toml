@@ -29,4 +29,6 @@ arborui-terminal = { workspace = true }
 
 [dev-dependencies]
 portable-pty = "=0.9.0"
+arborui-runtime = { workspace = true }
 arborui-text = { workspace = true }
+arborui-ui = { workspace = true }

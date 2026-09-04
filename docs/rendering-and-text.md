@@ -48,6 +48,14 @@ narrow. `Cjk` uses sequence-aware width and makes ambiguous characters wide.
 `WcWidth` sums individual code point widths for compatibility with traditional
 terminal behavior.
 
+LF, VT, FF, CR, NEL, U+2028 LINE SEPARATOR, and U+2029 PARAGRAPH SEPARATOR are
+mandatory line breaks with zero display width. Measurement and
+`Canvas::draw_text` interpret each grapheme containing one as one line
+transition. Tabs and all other control characters also have zero width and are
+omitted from drawing; tab expansion remains a higher-level layout concern. This
+policy is consistent across all width modes and prevents application text from
+becoming terminal control output.
+
 Environment overrides may be added for terminals whose behavior cannot be
 detected reliably.
 
@@ -292,11 +300,12 @@ Renderer-generated patches are always valid, expanding a changed range to
 include a complete wide span when necessary. Structural validation deliberately
 does not inspect grapheme text, so logical replay through `apply_to` does not
 need a terminal width policy. `FramePatch::validate_for_width_policy` adds the
-backend preflight: each text value must be exactly one printable grapheme whose
-measured width under the active policy matches its declared width, and one ID
-cannot map to conflicting text values visible within that patch. This per-patch
-check cannot detect an ID being reused for different text in separate manually
-constructed patches; the stream producer must uphold cross-patch identity.
+backend preflight: each text value must be exactly one printable, non-line-break
+grapheme whose measured width under the active policy matches its declared
+width, and one ID cannot map to conflicting text values visible within that
+patch. This per-patch check cannot detect an ID being reused for different text
+in separate manually constructed patches; the stream producer must uphold
+cross-patch identity.
 Renderers use their active policy for debug validation, and backends must use
 their terminal capability policy before producing any output.
 

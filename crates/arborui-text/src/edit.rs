@@ -2,6 +2,8 @@ use std::ops::Range;
 
 use unicode_segmentation::UnicodeSegmentation;
 
+use crate::is_line_break;
+
 /// A UTF-8 byte offset into a [`TextBuffer`].
 ///
 /// Values returned by `TextBuffer` always identify an extended-grapheme
@@ -254,13 +256,6 @@ fn sanitize_single_line(text: String) -> String {
     } else {
         text
     }
-}
-
-const fn is_line_break(character: char) -> bool {
-    matches!(
-        character,
-        '\n' | '\u{b}' | '\u{c}' | '\r' | '\u{85}' | '\u{2028}' | '\u{2029}'
-    )
 }
 
 fn boundary_before(text: &str, offset: usize) -> Option<usize> {

@@ -10,6 +10,16 @@
 - Treat terminal restoration as correctness, not cleanup polish.
 - Track end-to-end latency and bytes emitted, not only microbenchmark throughput.
 
+## Coverage Policy
+
+Coverage is a local diagnostic, not a merge gate. `just coverage` reports
+missing lines, `just coverage-html` provides local drilldown, and
+`just coverage-lcov` writes `lcov.info` for optional external analysis. The
+project does not publish a percentage badge or enforce a threshold because its
+transaction, PTY, snapshot, and fuzz contracts are more meaningful than a raw
+line percentage. This decision should be revisited if a stable baseline makes
+coverage regression enforcement useful.
+
 ## Unit Tests
 
 Each crate owns tests for its contracts.
@@ -236,11 +246,13 @@ Target environments:
 Not every emulator needs to run on every change. A smaller gating matrix and a
 larger scheduled compatibility matrix are acceptable.
 
-The gating matrix runs the process-isolated Crossterm lifecycle test on Linux
-PTY, macOS PTY, and Windows ConPTY. Linux additionally verifies exact termios
-restoration. Emulator semantics, tmux, Unix job-control signals, and termination
-signals remain explicit stabilization follow-ups. A PTY can verify emitted
-Kitty commands and cleanup ordering, but cannot validate rendered image pixels.
+The gating matrix compiles all workspace targets and features, then runs the
+process-isolated Crossterm lifecycle test on Linux PTY, macOS PTY, and Windows
+ConPTY. Unix verifies exact termios restoration. Normal cleanup, failed cleanup
+recovery, and restore-first panic reporting are covered. Emulator semantics,
+tmux, Unix job-control signals, and termination signals remain explicit
+stabilization follow-ups. A PTY can verify emitted Kitty commands and cleanup
+ordering, but cannot validate rendered image pixels.
 
 ## Benchmarks
 
@@ -461,11 +473,14 @@ on undocumented cell-run behavior.
 
 ### Milestone 10: Runtime And Terminal Resilience
 
-Status: planned.
+Status: in progress. Restore-first handling for application panics under
+`panic=unwind` and native PTY/ConPTY coverage are implemented. Abort handling,
+signals, polling wakeups, and broader compatibility work remain planned.
 
 Deliver:
 
-- Restore-first panic handling with documented unwind and abort behavior
+- Restore-first panic handling with documented unwind behavior; abort behavior
+  remains explicitly unsupported
 - Unix stop, continue, and termination-signal integration
 - Event-proxy wakeups that can interrupt blocked terminal polling
 - Explicit contracts for fullscreen alternate-screen rendering and any future
@@ -587,13 +602,14 @@ without rendering or transactional correctness regressions.
 
 Status: in progress. Dependency and security policy is checked for all three
 Cargo workspaces through a shared `cargo-deny` configuration and a dedicated CI
-matrix. The remaining release-governance and public-contract work is planned.
+matrix. Coverage is explicitly a local diagnostic without CI percentage
+enforcement. The remaining release-governance and public-contract work is planned.
 
 Deliver:
 
 - Dependency and security policy enforced through `cargo-deny` or equivalent
   auditing
-- A documented decision on coverage reporting and CI enforcement
+- Coverage reporting and CI enforcement policy
 - Public API and semver review for the first release, separating application,
   widget-author, backend-author, and internal implementation surfaces
 - Documented project ownership, review and release authority, succession, and

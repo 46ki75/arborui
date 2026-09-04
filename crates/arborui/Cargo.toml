@@ -37,6 +37,7 @@ arborui-ui = { workspace = true }
 arborui-widgets = { workspace = true }
 
 [dev-dependencies]
+arborui-test = { workspace = true }
 criterion = { workspace = true }
 
 [[bench]]

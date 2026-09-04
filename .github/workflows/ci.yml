@@ -100,5 +100,8 @@ jobs:
       - name: Install just
         uses: extractions/setup-just@v3
 
+      - name: Check all workspace targets
+        run: just check
+
       - name: Test terminal lifecycle
         run: just test-pty

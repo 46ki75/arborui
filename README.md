@@ -43,8 +43,15 @@ decoding through `arborui::image_decoder`:
 arborui = { version = "0.1.0", features = ["image-decoding"] }
 ```
 
-```rust
+```rust,no_run
+# #[cfg(feature = "image-decoding")]
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 let image = arborui::image_decoder::load("photo.webp")?;
+# let _ = image;
+# Ok(())
+# }
+# #[cfg(not(feature = "image-decoding"))]
+# fn main() {}
 ```
 
 It supports BMP, GIF, ICO, JPEG, PNG, PNM, QOI, TGA, TIFF, and WebP. Animated
@@ -66,10 +73,29 @@ arborui-test = "0.1.0"
 ```
 
 ```rust
-use arborui_test::{KeyCode, Size, TestApp};
+use arborui::{Application, Command, Element, UpdateContext};
+use arborui_test::{Size, TestApp};
 
-let mut app = TestApp::new(MyApp::default(), Size::new(80, 24));
-app.key(KeyCode::Enter);
+#[derive(Default)]
+struct MyApp;
+
+impl Application for MyApp {
+    type Message = ();
+
+    fn update(
+        &mut self,
+        _message: Self::Message,
+        _context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message> {
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        Element::text("complete")
+    }
+}
+
+let app = TestApp::new(MyApp, Size::new(80, 24));
 assert!(app.frame().characters().contains("complete"));
 ```
 
