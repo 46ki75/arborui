@@ -19,7 +19,7 @@ pub use arborui_render::{
 };
 pub use arborui_runtime::{
     DispatchReport, EventIngressMetrics, EventProxy, EventProxySendError, EventProxySendErrorKind,
-    RuntimeOptions,
+    InterruptPolicy, RuntimeOptions,
 };
 pub use arborui_terminal::{
     KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers, MouseButton, MouseEvent,

@@ -69,7 +69,7 @@ protocol. Use `--no-kitty` to confirm the text fallback.
 Use Up, Down, Left, Right, `p`, or `n` to change the selected image; Home and End
 jump to the first and last image. Click a visible list row to select it. Press
 `o` to remove or restore the transparent overlay, `m` to move the placement,
-`h` to delete or restore the placement, and `q` or Escape to quit. The controls
+`h` to delete or restore the placement, and `q`, Escape, or `Ctrl+C` to quit. The controls
 are also keyboard- and mouse-operable.
 
 Resizing the terminal refits and centers the preview while preserving the

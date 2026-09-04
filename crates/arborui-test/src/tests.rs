@@ -487,3 +487,30 @@ fn generic_resize_events_and_zero_area_frames_update_the_snapshot() {
     assert_eq!(app.frame().size(), Size::new(4, 0));
     assert_eq!(app.frame().characters(), "");
 }
+
+#[test]
+fn control_c_quits_through_the_public_harness() {
+    // Raw mode suppresses SIGINT, so Ctrl+C must exit as a key event.
+    let mut app = TestApp::new(Counter::default(), Size::new(4, 2));
+    app.key_with(
+        KeyCode::Character('c'),
+        KeyModifiers::CONTROL,
+        KeyEventKind::Press,
+    );
+    assert!(app.is_quitting());
+}
+
+#[test]
+fn ignore_policy_leaves_control_c_to_the_application() {
+    let mut app = TestApp::with_runtime_options(
+        Counter::default(),
+        Size::new(4, 2),
+        RuntimeOptions::new().with_interrupt(InterruptPolicy::Ignore),
+    );
+    app.key_with(
+        KeyCode::Character('c'),
+        KeyModifiers::CONTROL,
+        KeyEventKind::Press,
+    );
+    assert!(!app.is_quitting());
+}

@@ -299,6 +299,25 @@ runner. `Closed` means orderly shutdown or runner destruction has ended ingress.
 A successful send proves admission, not that the application update has run;
 work admitted immediately before concurrent shutdown may be discarded.
 
+### Interrupt Policy
+
+Raw mode clears the terminal `ISIG` flag, so `Ctrl+C` arrives as a key event and
+never as `SIGINT`. `RuntimeOptions::with_interrupt` selects how the runtime
+treats it:
+
+- `InterruptPolicy::QuitUnlessHandled` is the default. The event is dispatched
+  to the UI tree, and the runtime quits unless a handler called
+  `prevent_default`. Every application therefore has a working exit path, and an
+  application that wants `Ctrl+C` for itself can claim it.
+- `InterruptPolicy::Quit` always quits.
+- `InterruptPolicy::Ignore` leaves the key entirely to the application.
+
+The event is always dispatched first, so handlers observe it under every policy.
+Modifiers must match exactly, leaving `Ctrl+Shift+C` and `Ctrl+Alt+C` available
+to applications; key releases never interrupt. This is an in-band key binding,
+not signal handling: see `docs/terminal.md` for the unimplemented OS signal
+contract.
+
 `EventProxy::metrics` snapshots configured capacity, current depth, high-water
 mark, accepted and dequeued totals, full-rejection count, cumulative and maximum
 admission-to-dequeue latency, and closure. Queue latency ends when the runner

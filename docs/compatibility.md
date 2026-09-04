@@ -43,7 +43,10 @@ command bytes and cleanup ordering, but not the resulting pixels.
 - Raw mode and event reading are process-global. Applications must use one
   active local event reader.
 - Unix `SIGTSTP`, `SIGCONT`, `SIGHUP`, and `SIGTERM` lifecycle integration is
-  not implemented.
+  not implemented. A process signalled with `SIGINT` or `SIGTERM` from outside
+  terminates at its default disposition without restoring the terminal.
+- `Ctrl+C` is handled as a key event, not a signal, because raw mode clears
+  `ISIG`. `InterruptPolicy` governs it on every platform.
 - `panic=unwind` runs RAII cleanup. Abort, `SIGKILL`, power loss, and terminal
   host failure cannot be restored by application code.
 - Cursor visibility and shape, title, and autowrap are restored to conservative

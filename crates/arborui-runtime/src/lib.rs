@@ -14,7 +14,7 @@ pub use command::Command;
 pub use event::translate_terminal_event;
 pub use proxy::{EventIngressMetrics, EventProxy, EventProxySendError, EventProxySendErrorKind};
 pub use runner::{
-    AppRunner, DispatchReport, HeadlessRenderError, HeadlessRenderOutcome, ProcessReport,
-    RenderTimings, RuntimeError, RuntimeOptions, TerminalRenderOutcome, TimedRender, run,
-    run_with_options,
+    AppRunner, DispatchReport, HeadlessRenderError, HeadlessRenderOutcome, InterruptPolicy,
+    ProcessReport, RenderTimings, RuntimeError, RuntimeOptions, TerminalRenderOutcome, TimedRender,
+    run, run_with_options,
 };

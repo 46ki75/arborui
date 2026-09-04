@@ -312,6 +312,14 @@ may have changed any terminal cell or mode.
 
 ## Signals And Process Lifecycle
 
+Raw mode clears the terminal `ISIG` flag, so `Ctrl+C` is never delivered to the
+process as `SIGINT`. It arrives as an ordinary key event, which means an
+application that does not bind it has no exit path. The runtime therefore treats
+the interrupt key as a policy rather than a signal: `RuntimeOptions::with_interrupt`
+selects an `InterruptPolicy`, and the default `QuitUnlessHandled` quits unless a
+handler claimed the event with `prevent_default`. This is cross-platform and
+requires no signal handler.
+
 Unix job-control integration is not implemented yet. The target contract is:
 
 - `SIGTSTP` follows the suspend sequence before stopping.

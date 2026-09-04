@@ -12,8 +12,8 @@ use arborui_terminal::{
     TerminalBackend, TerminalEvent, TerminalSession, TerminalState, WriteOutcome,
 };
 use arborui_ui::{
-    Invalidation, PreparedUiFrame, ReconcileError, UiCommitError, UiError, UiEvent,
-    UiPreparationTimings, UiTree,
+    Invalidation, KeyAction, PreparedUiFrame, ReconcileError, UiCommitError, UiError, UiEvent,
+    UiKey, UiPreparationTimings, UiTree,
 };
 
 use crate::{
@@ -29,12 +29,65 @@ const MAX_MESSAGES_PER_TURN: usize = 768;
 const MAX_RESIZE_LOOKAHEAD: usize = 256;
 const DEFAULT_EVENT_INGRESS_CAPACITY: usize = 1_024;
 
+/// Runtime handling of the Ctrl+C interrupt key.
+///
+/// Raw mode clears the terminal `ISIG` flag, so Ctrl+C never reaches the process
+/// as `SIGINT`. It arrives as an ordinary key event, and without a runtime policy
+/// an application that does not bind it has no way to exit.
+///
+/// The event is always dispatched to the UI tree first, so handlers observe it
+/// under every policy.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum InterruptPolicy {
+    /// Deliver Ctrl+C to the UI tree without any runtime behavior.
+    Ignore,
+    /// Quit unless a handler called
+    /// [`prevent_default`](arborui_ui::EventContext::prevent_default).
+    ///
+    /// This is the default. It guarantees every application an exit path while
+    /// letting one that wants Ctrl+C for itself claim it.
+    #[default]
+    QuitUnlessHandled,
+    /// Quit whenever Ctrl+C is pressed, regardless of handlers.
+    Quit,
+}
+
+impl InterruptPolicy {
+    /// Returns whether a dispatched event should terminate the runtime.
+    fn should_quit(self, event: &UiEvent, default_prevented: bool) -> bool {
+        if !is_interrupt_key(event) {
+            return false;
+        }
+        match self {
+            Self::Ignore => false,
+            Self::QuitUnlessHandled => !default_prevented,
+            Self::Quit => true,
+        }
+    }
+}
+
+/// Returns whether an event is the Ctrl+C interrupt key.
+///
+/// Modifiers must match exactly, so `Ctrl+Shift+C` and `Ctrl+Alt+C` remain
+/// available to applications. A key release never interrupts.
+fn is_interrupt_key(event: &UiEvent) -> bool {
+    matches!(
+        event,
+        UiEvent::Key(key)
+            if key.key == UiKey::Character('c')
+                && key.modifiers == arborui_ui::KeyModifiers::CONTROL
+                && matches!(key.action, KeyAction::Press | KeyAction::Repeat)
+    )
+}
+
 /// Configuration for application runtime construction.
 ///
-/// External proxy ingress defaults to a capacity of 1,024 messages.
+/// External proxy ingress defaults to a capacity of 1,024 messages, and Ctrl+C
+/// quits unless a handler claims it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RuntimeOptions {
     event_ingress_capacity: NonZeroUsize,
+    interrupt: InterruptPolicy,
 }
 
 impl RuntimeOptions {
@@ -56,6 +109,19 @@ impl RuntimeOptions {
     pub const fn event_ingress_capacity(&self) -> NonZeroUsize {
         self.event_ingress_capacity
     }
+
+    /// Sets how the runtime treats the Ctrl+C interrupt key.
+    #[must_use]
+    pub const fn with_interrupt(mut self, interrupt: InterruptPolicy) -> Self {
+        self.interrupt = interrupt;
+        self
+    }
+
+    /// Returns the configured interrupt policy.
+    #[must_use]
+    pub const fn interrupt(&self) -> InterruptPolicy {
+        self.interrupt
+    }
 }
 
 impl Default for RuntimeOptions {
@@ -63,6 +129,7 @@ impl Default for RuntimeOptions {
         Self {
             event_ingress_capacity: NonZeroUsize::new(DEFAULT_EVENT_INGRESS_CAPACITY)
                 .unwrap_or(NonZeroUsize::MIN),
+            interrupt: InterruptPolicy::QuitUnlessHandled,
         }
     }
 }
@@ -269,6 +336,7 @@ pub struct AppRunner<A: Application> {
     invalidation: Invalidation,
     quitting: bool,
     prefer_external: bool,
+    interrupt: InterruptPolicy,
 }
 
 impl<A: Application> AppRunner<A> {
@@ -339,6 +407,7 @@ impl<A: Application> AppRunner<A> {
             invalidation: Invalidation::Recompose,
             quitting: false,
             prefer_external: false,
+            interrupt: options.interrupt(),
         }
     }
 
@@ -513,16 +582,24 @@ impl<A: Application> AppRunner<A> {
             self.viewport = *size;
             self.invalidation.request(Invalidation::Layout);
         }
-        let view = self.application.view();
-        let outcome = self.ui.dispatch(&view, &event, &self.renderer)?;
-        self.invalidation.request(self.ui.pending_invalidation());
-        let report = DispatchReport {
-            messages: outcome.messages.len(),
-            handled: outcome.handled,
-            default_prevented: outcome.default_prevented,
-            propagation_stopped: outcome.propagation_stopped,
+        // The view borrows the application, so it is scoped to release that
+        // borrow before the interrupt policy may take `&mut self`.
+        let report = {
+            let view = self.application.view();
+            let outcome = self.ui.dispatch(&view, &event, &self.renderer)?;
+            self.invalidation.request(self.ui.pending_invalidation());
+            let report = DispatchReport {
+                messages: outcome.messages.len(),
+                handled: outcome.handled,
+                default_prevented: outcome.default_prevented,
+                propagation_stopped: outcome.propagation_stopped,
+            };
+            self.messages.extend(outcome.messages);
+            report
         };
-        self.messages.extend(outcome.messages);
+        if self.interrupt.should_quit(&event, report.default_prevented) {
+            self.request_quit();
+        }
         Ok(report)
     }
 
@@ -803,12 +880,17 @@ impl<A: Application> AppRunner<A> {
                     self.scheduler.schedule_after(delay, message);
                 }
                 CommandAction::Quit => {
-                    self.quitting = true;
-                    self.receiver.close();
+                    self.request_quit();
                     break;
                 }
             }
         }
+    }
+
+    /// Requests shutdown and closes external ingress.
+    fn request_quit(&mut self) {
+        self.quitting = true;
+        self.receiver.close();
     }
 
     fn dispatch_terminal_event_with_recovery(
@@ -1241,6 +1323,63 @@ mod tests {
             self.views.fetch_add(1, Ordering::Relaxed);
             Element::text("view")
         }
+    }
+
+    /// Claims Ctrl+C for itself when `claim_interrupt` is set.
+    #[derive(Default)]
+    struct InterruptApp {
+        claim_interrupt: bool,
+    }
+
+    impl Application for InterruptApp {
+        type Message = ();
+
+        fn update(
+            &mut self,
+            _message: Self::Message,
+            _context: &mut UpdateContext<Self::Message>,
+        ) -> Command<Self::Message> {
+            Command::none()
+        }
+
+        fn view(&self) -> Element<'_, Self::Message> {
+            let claim = self.claim_interrupt;
+            Element::custom("root", [Element::text("interrupt")]).on_event(
+                EventPhase::Capture,
+                move |_event, context| {
+                    if claim {
+                        context.prevent_default();
+                    }
+                },
+            )
+        }
+    }
+
+    fn interrupt_runner(
+        application: InterruptApp,
+        options: RuntimeOptions,
+    ) -> AppRunner<InterruptApp> {
+        let size = Size::new(20, 5);
+        let mut runner = AppRunner::new_with_options(
+            application,
+            size,
+            Renderer::new(size, Capabilities::default().width_policy),
+            options,
+        );
+        // Dispatch requires a committed tree that matches the current view.
+        runner
+            .render_headless()
+            .expect("interrupt runner should commit an initial frame");
+        runner
+    }
+
+    fn key_event(code: KeyCode, modifiers: KeyModifiers, kind: KeyEventKind) -> TerminalEvent {
+        TerminalEvent::Key(KeyEvent {
+            code,
+            modifiers,
+            kind,
+            state: KeyEventState::default(),
+        })
     }
 
     struct MissedInvalidationApp {
@@ -2083,5 +2222,134 @@ mod tests {
             panic!("expected the original backend failure");
         };
         assert_eq!(runtime_error.to_string(), "poll failure");
+    }
+
+    #[test]
+    fn control_c_quits_by_default() -> Result<(), ReconcileError> {
+        let mut runner = interrupt_runner(InterruptApp::default(), RuntimeOptions::default());
+        runner.dispatch_terminal_event(key_event(
+            KeyCode::Character('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ))?;
+        assert!(runner.is_quitting());
+        Ok(())
+    }
+
+    #[test]
+    fn control_c_repeat_quits_by_default() -> Result<(), ReconcileError> {
+        let mut runner = interrupt_runner(InterruptApp::default(), RuntimeOptions::default());
+        runner.dispatch_terminal_event(key_event(
+            KeyCode::Character('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Repeat,
+        ))?;
+        assert!(runner.is_quitting());
+        Ok(())
+    }
+
+    #[test]
+    fn prevent_default_claims_control_c() -> Result<(), ReconcileError> {
+        let mut runner = interrupt_runner(
+            InterruptApp {
+                claim_interrupt: true,
+            },
+            RuntimeOptions::default(),
+        );
+        runner.dispatch_terminal_event(key_event(
+            KeyCode::Character('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ))?;
+        assert!(!runner.is_quitting());
+        Ok(())
+    }
+
+    #[test]
+    fn quit_policy_overrides_prevent_default() -> Result<(), ReconcileError> {
+        let mut runner = interrupt_runner(
+            InterruptApp {
+                claim_interrupt: true,
+            },
+            RuntimeOptions::new().with_interrupt(InterruptPolicy::Quit),
+        );
+        runner.dispatch_terminal_event(key_event(
+            KeyCode::Character('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ))?;
+        assert!(runner.is_quitting());
+        Ok(())
+    }
+
+    #[test]
+    fn ignore_policy_leaves_control_c_to_the_application() -> Result<(), ReconcileError> {
+        let mut runner = interrupt_runner(
+            InterruptApp::default(),
+            RuntimeOptions::new().with_interrupt(InterruptPolicy::Ignore),
+        );
+        runner.dispatch_terminal_event(key_event(
+            KeyCode::Character('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ))?;
+        assert!(!runner.is_quitting());
+        Ok(())
+    }
+
+    #[test]
+    fn only_exact_control_c_press_interrupts() -> Result<(), ReconcileError> {
+        // Modifier combinations built on Ctrl+C stay available to applications,
+        // as do releases and the unmodified character.
+        let ignored = [
+            key_event(
+                KeyCode::Character('c'),
+                KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+                KeyEventKind::Press,
+            ),
+            key_event(
+                KeyCode::Character('c'),
+                KeyModifiers::CONTROL | KeyModifiers::ALT,
+                KeyEventKind::Press,
+            ),
+            key_event(
+                KeyCode::Character('c'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Release,
+            ),
+            key_event(
+                KeyCode::Character('c'),
+                KeyModifiers::NONE,
+                KeyEventKind::Press,
+            ),
+            key_event(
+                KeyCode::Character('d'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Press,
+            ),
+        ];
+        for event in ignored {
+            let mut runner = interrupt_runner(InterruptApp::default(), RuntimeOptions::default());
+            runner.dispatch_terminal_event(event.clone())?;
+            assert!(!runner.is_quitting(), "{event:?} must not interrupt");
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn interrupt_closes_external_ingress() -> Result<(), ReconcileError> {
+        let mut runner = interrupt_runner(InterruptApp::default(), RuntimeOptions::default());
+        let proxy = runner.event_proxy();
+        runner.dispatch_terminal_event(key_event(
+            KeyCode::Character('c'),
+            KeyModifiers::CONTROL,
+            KeyEventKind::Press,
+        ))?;
+        assert!(runner.is_quitting());
+        let closed = proxy
+            .send(())
+            .expect_err("interrupted runner should close ingress");
+        assert_eq!(closed.kind(), crate::EventProxySendErrorKind::Closed);
+        Ok(())
     }
 }
