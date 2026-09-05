@@ -366,6 +366,9 @@ pub enum Message {
 }
 
 /// Facade-only application proving bounded visible-range construction.
+///
+/// The general-purpose [`Default`] model uses a 16-row list viewport, not a
+/// detected terminal size. Terminal launchers should use [`Self::from_terminal_size`].
 pub struct CollectionLab {
     items: Vec<Item>,
     mode: CollectionMode,
@@ -379,6 +382,18 @@ pub struct CollectionLab {
 }
 
 impl CollectionLab {
+    /// Creates 100,000 fixed-height items sized for a terminal.
+    ///
+    /// Reserves four rows outside the list, keeping a minimum one-row viewport.
+    #[must_use]
+    pub fn from_terminal_size(size: Size) -> Self {
+        Self::new(
+            CollectionMode::Fixed,
+            100_000,
+            collection_viewport_height(size.height),
+        )
+    }
+
     /// Creates a generated collection with an explicit application-owned viewport.
     #[must_use]
     pub fn new(mode: CollectionMode, item_count: usize, viewport_height: usize) -> Self {
@@ -529,7 +544,7 @@ impl CollectionLab {
     }
 
     fn resize(&mut self, size: Size) {
-        self.viewport_height = usize::from(size.height.saturating_sub(4).max(1));
+        self.viewport_height = collection_viewport_height(size.height);
         self.scroll = self.scroll.min(self.max_scroll());
         if let Some(index) = self.active_index() {
             self.reveal(index);
@@ -547,6 +562,10 @@ impl CollectionLab {
             self.reveal(index);
         }
     }
+}
+
+fn collection_viewport_height(terminal_height: u16) -> usize {
+    usize::from(terminal_height.saturating_sub(4).max(1))
 }
 
 impl Default for CollectionLab {
@@ -790,5 +809,27 @@ mod tests {
 
         assert_eq!(scroll, 6);
         assert_eq!(provider.anchor(scroll), Some(anchor));
+    }
+
+    #[test]
+    fn terminal_viewport_reserves_non_list_rows_and_saturates_at_one() {
+        for (terminal_height, expected) in [
+            (0, 1),
+            (1, 1),
+            (2, 1),
+            (3, 1),
+            (4, 1),
+            (5, 1),
+            (6, 2),
+            (12, 8),
+            (20, 16),
+            (u16::MAX, 65_531),
+        ] {
+            assert_eq!(
+                collection_viewport_height(terminal_height),
+                expected,
+                "terminal height {terminal_height}"
+            );
+        }
     }
 }
