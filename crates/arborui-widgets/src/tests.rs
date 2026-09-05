@@ -52,6 +52,8 @@ fn pointer(kind: PointerEventKind, x: i32, y: i32) -> UiEvent {
     })
 }
 
+mod block_borders;
+
 #[test]
 fn block_paints_border_title_and_inset_content() -> Result<(), Box<dyn Error>> {
     let view = Block::new(Element::<()>::text("x"))

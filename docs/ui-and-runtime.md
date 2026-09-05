@@ -456,6 +456,13 @@ viewport-sized stack host with the dialog as its final layer. Block painting and
 stack/scroll composition use the backend-neutral `Element` paint and layout
 contracts rather than terminal-backend types.
 
+`Block` reserves a one-cell border plus its configured padding. `BorderSet::Unicode`
+uses box-drawing glyphs only when all six are one cell wide under the canvas's active
+width policy; otherwise it paints the complete ASCII set (`-`, `|`, `+`). This keeps
+the border and content insets intact under `WidthPolicy::Cjk`. Glyphs are selected
+at paint time, so changing the renderer's width policy also updates an existing
+block. Explicit `BorderSet::Ascii` always uses ASCII.
+
 ## Public Headless Harness
 
 `arborui-test` owns an in-memory terminal and drives the same `AppRunner`, retained

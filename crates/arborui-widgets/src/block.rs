@@ -9,6 +9,9 @@ use arborui_ui::Element;
 #[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub enum BorderSet {
     /// Unicode box-drawing glyphs.
+    ///
+    /// Falls back to ASCII when any border glyph is not one cell wide under
+    /// the active width policy.
     #[default]
     Unicode,
     /// Portable ASCII border glyphs.
@@ -139,7 +142,6 @@ impl<'a, Message> Block<'a, Message> {
         border.hash(&mut hasher);
         border_style.hash(&mut hasher);
         let fingerprint = hasher.finish();
-        let glyphs = border.glyphs();
 
         Element::custom("block", [child])
             .layout(layout)
@@ -147,6 +149,22 @@ impl<'a, Message> Block<'a, Message> {
             .paint(fingerprint, move |size, canvas| {
                 if size.width == 0 || size.height == 0 {
                     return Ok(());
+                }
+
+                let mut glyphs = border.glyphs();
+                if border == BorderSet::Unicode
+                    && [
+                        glyphs.horizontal,
+                        glyphs.vertical,
+                        glyphs.top_left,
+                        glyphs.top_right,
+                        glyphs.bottom_left,
+                        glyphs.bottom_right,
+                    ]
+                    .into_iter()
+                    .any(|glyph| arborui_text::measure(glyph, canvas.width_policy()).width != 1)
+                {
+                    glyphs = BorderSet::Ascii.glyphs();
                 }
 
                 let right = i32::from(size.width) - 1;
