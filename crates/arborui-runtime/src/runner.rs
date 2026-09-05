@@ -1340,6 +1340,8 @@ mod tests {
         }
     }
 
+    mod fairness;
+
     #[derive(Default)]
     struct ViewApp {
         value: usize,

@@ -107,6 +107,7 @@ pub(crate) struct Scheduler<Message> {
     clock: Arc<dyn Clock>,
     timers: Vec<Timer<Message>>,
     next_timer_order: u64,
+    prefer_future: bool,
 }
 
 pub(crate) struct PollReport {
@@ -126,6 +127,7 @@ impl<Message> Scheduler<Message> {
             clock,
             timers: Vec::new(),
             next_timer_order: 0,
+            prefer_future: false,
         }
     }
 
@@ -163,25 +165,31 @@ impl<Message> Scheduler<Message> {
     pub(crate) fn poll_ready(&mut self, output: &mut Vec<Message>, limit: usize) -> PollReport {
         let now = self.clock.now();
         let mut due = 0;
+        let mut ready = Vec::new();
         self.timers
             .sort_by_key(|timer| (timer.deadline, timer.order));
-        while due < limit {
-            if self
+
+        // Alternate across calls, even with one-item budgets. Select the whole
+        // batch before polling so self-wakes are deferred to the next snapshot.
+        while due + ready.len() < limit {
+            let timer_ready = self
                 .timers
                 .first()
-                .is_some_and(|timer| timer.deadline <= now)
-            {
-                output.push(self.timers.remove(0).message);
-                due += 1;
-            } else {
+                .is_some_and(|timer| timer.deadline <= now);
+            if self.prefer_future || !timer_ready {
+                if let Ok(id) = self.ready_receiver.try_recv() {
+                    ready.push(id);
+                    self.prefer_future = false;
+                    continue;
+                }
+            }
+            if !timer_ready {
                 break;
             }
+            output.push(self.timers.remove(0).message);
+            due += 1;
+            self.prefer_future = true;
         }
-        let remaining = limit.saturating_sub(due);
-        let ready = (0..limit)
-            .take(remaining)
-            .map_while(|_| self.ready_receiver.try_recv().ok())
-            .collect::<Vec<_>>();
         let polled = ready.len();
         let mut completed = 0;
         for id in ready {
