@@ -1,5 +1,5 @@
-use arborui_core::{CursorShape, CursorState, Point, Style};
-use arborui_layout::{Dimension, LayoutStyle};
+use arborui_core::{CursorShape, CursorState, Modifier, Point, Style};
+use arborui_layout::{Align, Dimension, LayoutStyle};
 use arborui_text::{TextBuffer, TextEdit, TextMovement, measure};
 use arborui_ui::{Element, EventPhase, KeyAction, KeyModifiers, UiEvent, UiKey};
 
@@ -21,6 +21,7 @@ pub struct TextInput<'a, Message> {
     on_change: Box<dyn Fn(TextBuffer) -> Message + 'a>,
     on_submit: Option<Box<dyn Fn() -> Message + 'a>>,
     style: Style,
+    selection_style: Style,
     layout: LayoutStyle,
     focus_order: Option<i32>,
 }
@@ -34,6 +35,7 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
             on_change: Box::new(on_change),
             on_submit: None,
             style: Style::default(),
+            selection_style: Style::new().add_modifiers(Modifier::REVERSED),
             layout: LayoutStyle::default(),
             focus_order: None,
         }
@@ -50,6 +52,18 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
     #[must_use]
     pub const fn style(mut self, style: Style) -> Self {
         self.style = style;
+        self
+    }
+
+    /// Sets the style added to selected text, whether or not the input is focused.
+    ///
+    /// Defaults to [`Modifier::REVERSED`]. This replaces the selection style, not
+    /// the input style: unspecified colors inherit and modifiers combine with
+    /// the resolved input style. Choose a contrasting style if the input already
+    /// uses reversed colors; inherited modifiers cannot be removed here.
+    #[must_use]
+    pub const fn selection_style(mut self, style: Style) -> Self {
+        self.selection_style = style;
         self
     }
 
@@ -85,11 +99,31 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         );
         let on_change = self.on_change;
         let on_submit = self.on_submit;
-        let cursor_slot = Element::<Message>::container([])
-            .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)));
+        let selection = buffer
+            .selection()
+            .map_or(0..0, |selection| selection.byte_range());
+        let text = buffer.text();
+        // Keep one outer flex item and stable spans across selection changes.
+        // Only the viewport clips text; spans must not shrink or stretch vertically.
+        let span_layout = LayoutStyle::new().flex(0, 0);
+        let text_content = Element::container([
+            Element::text(&text[..selection.start]).layout(span_layout),
+            Element::text(&text[selection.clone()])
+                .layout(span_layout)
+                .style(self.selection_style),
+            Element::text(&text[selection.end..]).layout(span_layout),
+        ])
+        .layout(LayoutStyle {
+            align: Align::Start,
+            ..LayoutStyle::default()
+        });
         let mut element = Element::custom(
             "text-input",
-            [Element::text(buffer.text()).style(self.style), cursor_slot],
+            [
+                text_content,
+                Element::container([])
+                    .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1))),
+            ],
         )
         .layout(layout)
         .style(self.style)
