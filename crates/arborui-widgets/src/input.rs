@@ -1,7 +1,12 @@
 use arborui_core::{CursorShape, CursorState, Modifier, Point, Style};
 use arborui_layout::{Align, Dimension, LayoutStyle};
-use arborui_text::{TextBuffer, TextEdit, TextMovement, measure};
+use arborui_text::{TextBuffer, TextEdit, TextMovement, WidthPolicy};
+#[cfg(not(test))]
+use arborui_text::{graphemes, measure};
 use arborui_ui::{Element, EventPhase, KeyAction, KeyModifiers, UiEvent, UiKey};
+
+#[cfg(test)]
+use tests::{graphemes, measure};
 
 /// Creates a controlled single-line text input builder.
 #[must_use]
@@ -100,7 +105,7 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
             .map_or(0..0, |selection| selection.byte_range());
         let text = buffer.text();
         // Keep one outer flex item and stable spans across selection changes.
-        // Only the viewport clips text; spans must not shrink or stretch vertically.
+        // Spans must not shrink or stretch vertically.
         let span_layout = LayoutStyle::new().flex(0, 0);
         let text_content = Element::container([
             Element::text(&text[..selection.start]).layout(span_layout),
@@ -112,6 +117,10 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         .layout(LayoutStyle {
             align: Align::Start,
             ..LayoutStyle::default()
+        })
+        .child_offset_with(cursor_byte as u64, move |size, width_policy| {
+            let (_, offset) = input_text_geometry(buffer, size.width, width_policy);
+            Point::new(offset, 0)
         });
         let mut element = Element::custom(
             "text-input",
@@ -124,14 +133,13 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         .layout(layout)
         .style(self.style)
         .focusable(true)
-        .cursor_with_child(0, cursor_byte as u64, move |width_policy, _size| {
-            let cursor_width = measure(&buffer.text()[..cursor_byte], width_policy).width;
-            CursorState::visible(Point::new(saturating_i32(cursor_width), 0))
-                .with_shape(CursorShape::Bar)
+        .cursor_with_child(0, cursor_byte as u64, move |width_policy, size| {
+            let (x, _) = input_text_geometry(buffer, size.width, width_policy);
+            CursorState::visible(Point::new(x, 0)).with_shape(CursorShape::Bar)
         })
         .child_offset_with_child(0, cursor_byte as u64, move |size, width_policy, text| {
-            let cursor_width = measure(&buffer.text()[..cursor_byte], width_policy).width;
-            let cursor = text.origin().translated(saturating_i32(cursor_width), 0);
+            let (x, _) = input_text_geometry(buffer, text.width, width_policy);
+            let cursor = text.origin().translated(x, 0);
             // Scroll only when the resolved caret leaves the content viewport.
             Point::new(
                 cursor
@@ -180,6 +188,27 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         }
         element
     }
+}
+
+fn input_text_geometry(buffer: &TextBuffer, width: u16, policy: WidthPolicy) -> (i32, i32) {
+    let cursor = saturating_i32(measure(&buffer.text()[..buffer.cursor().get()], policy).width);
+    if cursor <= i32::from(width.saturating_sub(1)) {
+        return (cursor, 0);
+    }
+    // A column-stretched group can be narrower than its intrinsic text. Scroll
+    // the spans inside that clip instead of moving the entire clip offscreen.
+    // The prefix proves overflow past the right edge. At the exact edge, keep
+    // the outer spare-caret cell unless a positive-width suffix proves overflow.
+    if cursor == i32::from(width)
+        && !graphemes(&buffer.text()[buffer.cursor().get()..], policy)
+            .any(|grapheme| grapheme.width > 0)
+    {
+        return (cursor, 0);
+    }
+    let offset = i32::from(width.saturating_sub(1))
+        .saturating_sub(cursor)
+        .min(0);
+    (cursor.saturating_add(offset), offset)
 }
 
 enum InputAction<'a> {
@@ -237,4 +266,105 @@ fn input_action(event: &UiEvent) -> Option<InputAction<'_>> {
 
 fn saturating_i32(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    thread_local! {
+        static MEASURED_BYTES: Cell<usize> = const { Cell::new(0) };
+    }
+
+    pub(super) fn measure(text: &str, policy: WidthPolicy) -> arborui_text::TextMetrics {
+        MEASURED_BYTES.with(|bytes| bytes.set(bytes.get() + text.len()));
+        arborui_text::measure(text, policy)
+    }
+
+    pub(super) fn graphemes(
+        text: &str,
+        policy: WidthPolicy,
+    ) -> impl Iterator<Item = arborui_text::Grapheme<'_>> {
+        // Count fully measured bytes and yielded suffix bytes, not wall-clock time.
+        arborui_text::graphemes(text, policy).inspect(|grapheme| {
+            MEASURED_BYTES.with(|bytes| bytes.set(bytes.get() + grapheme.text.len()));
+        })
+    }
+
+    fn assert_bounded_geometry_work(cluster: &str) {
+        for policy in [WidthPolicy::Unicode, WidthPolicy::Cjk, WidthPolicy::WcWidth] {
+            for length in [1 << 20, 64] {
+                let mut buffer = TextBuffer::new(cluster.repeat(length));
+                buffer.apply(TextEdit::Move {
+                    movement: TextMovement::Home,
+                    extend_selection: false,
+                });
+                for position in 0..=41 {
+                    if matches!(position, 0 | 1 | 39 | 40 | 41) {
+                        MEASURED_BYTES.with(|bytes| bytes.set(0));
+                        let (cursor, offset) = input_text_geometry(&buffer, 40, policy);
+                        assert_eq!(cursor, position.min(39));
+                        assert_eq!(offset, cursor - position);
+                        let expected =
+                            (position as usize + usize::from(position == 40)) * cluster.len();
+                        assert_eq!(
+                            MEASURED_BYTES.with(Cell::get),
+                            expected,
+                            "{policy:?}, cluster={cluster:?}, length={length}, position={position}"
+                        );
+                    }
+                    buffer.apply(TextEdit::Move {
+                        movement: TextMovement::Right,
+                        extend_selection: false,
+                    });
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn input_ascii_geometry_has_bounded_measurement_work() {
+        assert_bounded_geometry_work("a");
+    }
+
+    #[test]
+    fn input_combining_geometry_has_bounded_measurement_work() {
+        assert_bounded_geometry_work("a\u{301}");
+    }
+
+    #[test]
+    fn input_geometry_right_edge_preserves_the_spare_caret_cell() {
+        for policy in [WidthPolicy::Unicode, WidthPolicy::Cjk, WidthPolicy::WcWidth] {
+            for prefix in ["abcd", "a\u{301}\u{b7}\u{1f469}\u{200d}\u{1f4bb}z"] {
+                for (suffix, overflow, suffix_bytes) in [
+                    ("", false, 0),
+                    ("\u{200b}", false, 3),
+                    ("\u{200b}xyz", true, 4),
+                ] {
+                    let width = arborui_text::measure(prefix, policy).width as u16;
+                    let mut buffer = TextBuffer::new(format!("{prefix}{suffix}"));
+                    buffer.apply(TextEdit::Move {
+                        movement: TextMovement::Home,
+                        extend_selection: false,
+                    });
+                    for _ in arborui_text::graphemes(prefix, policy) {
+                        buffer.apply(TextEdit::Move {
+                            movement: TextMovement::Right,
+                            extend_selection: false,
+                        });
+                    }
+                    assert_eq!(buffer.cursor().get(), prefix.len());
+                    MEASURED_BYTES.with(|bytes| bytes.set(0));
+                    let expected = if overflow {
+                        (i32::from(width) - 1, -1)
+                    } else {
+                        (i32::from(width), 0)
+                    };
+                    assert_eq!(input_text_geometry(&buffer, width, policy), expected);
+                    assert_eq!(MEASURED_BYTES.with(Cell::get), prefix.len() + suffix_bytes);
+                }
+            }
+        }
+    }
 }

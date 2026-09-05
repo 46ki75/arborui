@@ -4,6 +4,34 @@ use arborui_layout::{Align, FlexDirection, Justify};
 use arborui_text::{graphemes, measure};
 
 #[test]
+fn column_stretched_input_end_keeps_scrolled_text_visible() -> Result<(), Box<dyn Error>> {
+    let buffer = TextBuffer::new("abcdefghij");
+    let size = Size::new(4, 1);
+    let view = TextInput::new(&buffer, |updated| updated)
+        .layout(LayoutStyle {
+            direction: FlexDirection::Column,
+            align: Align::Stretch,
+            ..LayoutStyle::new().size(Dimension::cells(4), Dimension::cells(1))
+        })
+        .build();
+    let mut tree = UiTree::new();
+    let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+    let prepared = tree.prepare(&view, size, &mut renderer)?;
+    let patch = prepared.patch().clone();
+    tree.commit(prepared, &mut renderer)?;
+
+    let root = tree.root().ok_or("missing input")?;
+    assert_eq!(tree.focused(), Some(root));
+    assert_eq!(patch.cursor.visibility, CursorVisibility::Visible);
+    assert_eq!(patch.cursor.position, Point::new(3, 0));
+    let row: String = (0..4)
+        .map(|x| patch_grapheme(&patch, Point::new(x, 0)).unwrap_or(" "))
+        .collect();
+    assert_eq!(row, "hij ", "scrolled text must remain beside its caret");
+    Ok(())
+}
+
+#[test]
 fn horizontally_centered_input_cursor_tracks_text() -> Result<(), Box<dyn Error>> {
     let buffer = TextBuffer::new("abc");
     let view = TextInput::new(&buffer, |updated| updated)
@@ -143,7 +171,11 @@ fn assert_input_geometry(
     let input = tree.node(parent).ok_or("missing parent")?.children()[0];
     let input_node = tree.node(input).ok_or("missing input")?;
     let text_node = tree.node(input_node.children()[0]).ok_or("missing text")?;
-    let text_origin = text_node.content().origin();
+    let text_origin = tree
+        .node(text_node.children()[0])
+        .ok_or("missing first span")?
+        .content()
+        .origin();
     let context = format!(
         "{layout:?}, {policy:?}, {:?}, cursor {}",
         buffer.text(),
@@ -170,12 +202,7 @@ fn assert_input_geometry(
     for grapheme in graphemes(buffer.text(), policy) {
         let width = i32::try_from(grapheme.width)?;
         let point = Point::new(x, text_origin.y);
-        // Column stretching can constrain the text's own paint clip before scrolling.
-        if width > 0
-            && content.contains(point)
-            && content.contains(point.translated(width - 1, 0))
-            && text_node.content().contains(point)
-            && text_node.content().contains(point.translated(width - 1, 0))
+        if width > 0 && content.contains(point) && content.contains(point.translated(width - 1, 0))
         {
             assert_eq!(
                 patch_grapheme(&patch, point),
@@ -212,7 +239,10 @@ fn input_cursor_preserves_all_alignments_directions_spacing_and_insets()
                         ("abc", None),
                         ("abc", Some(Size::new(16, 5))),
                         ("abcdefghij", Some(Size::new(4, 1))),
-                        ("a\u{b7}\u{1f469}\u{200d}\u{1f4bb}z", Some(Size::new(5, 3))),
+                        (
+                            "a\u{301}\u{b7}\u{1f469}\u{200d}\u{1f4bb}\u{754c}z",
+                            Some(Size::new(5, 3)),
+                        ),
                     ] {
                         let mut layout = LayoutStyle {
                             direction,
@@ -229,13 +259,16 @@ fn input_cursor_preserves_all_alignments_directions_spacing_and_insets()
                                 Dimension::cells(size.height + 4),
                             );
                         }
-                        for movement in [TextMovement::Home, TextMovement::Right, TextMovement::End]
-                        {
-                            let mut buffer = TextBuffer::new(text);
-                            buffer.apply(TextEdit::Move {
-                                movement: TextMovement::Home,
-                                extend_selection: false,
-                            });
+                        let mut buffer = TextBuffer::new(text);
+                        for movement in [
+                            TextMovement::Home,
+                            TextMovement::Right,
+                            TextMovement::Right,
+                            TextMovement::Right,
+                            TextMovement::Right,
+                            TextMovement::Right,
+                            TextMovement::End,
+                        ] {
                             buffer.apply(TextEdit::Move {
                                 movement,
                                 extend_selection: false,
@@ -331,6 +364,38 @@ fn aligned_input_incremental_frames_match_full_layout() -> Result<(), Box<dyn Er
             WidthPolicy::Unicode,
             TextMovement::End,
         ),
+        (
+            Size::new(5, 3),
+            FlexDirection::Column,
+            Justify::Center,
+            Align::Stretch,
+            WidthPolicy::Unicode,
+            TextMovement::End,
+        ),
+        (
+            Size::new(5, 3),
+            FlexDirection::Column,
+            Justify::Center,
+            Align::Stretch,
+            WidthPolicy::Cjk,
+            TextMovement::End,
+        ),
+        (
+            Size::new(5, 3),
+            FlexDirection::ColumnReverse,
+            Justify::End,
+            Align::Stretch,
+            WidthPolicy::WcWidth,
+            TextMovement::End,
+        ),
+        (
+            Size::new(5, 3),
+            FlexDirection::ColumnReverse,
+            Justify::End,
+            Align::Stretch,
+            WidthPolicy::WcWidth,
+            TextMovement::Home,
+        ),
     ] {
         buffer.apply(TextEdit::Move {
             movement,
@@ -365,12 +430,13 @@ fn aligned_input_incremental_frames_match_full_layout() -> Result<(), Box<dyn Er
             assert_eq!(input, *identity.get_or_insert(input));
             assert_eq!(tree.focused(), Some(input));
             let text = tree.node(input).ok_or("missing input")?.children()[0];
+            let span = tree.node(text).ok_or("missing text")?.children()[0];
             let prefix =
                 i32::try_from(measure(&buffer.text()[..buffer.cursor().get()], policy).width)?;
             assert_eq!(
                 cursor,
-                tree.node(text)
-                    .ok_or("missing text")?
+                tree.node(span)
+                    .ok_or("missing first span")?
                     .content()
                     .origin()
                     .translated(prefix, 0)
