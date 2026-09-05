@@ -62,7 +62,9 @@ impl<W: Write + Send> CrosstermBackend<W> {
             active,
             keyboard_pushed: false,
             original_raw_mode,
-            kitty: kitty::KittyState::default(),
+            kitty: kitty::KittyState::new(kitty_single_command_from(
+                env::var("TERM_PROGRAM").ok().as_deref(),
+            )),
         })
     }
 
@@ -524,6 +526,12 @@ fn detect_kitty_graphics() -> bool {
     )
 }
 
+fn kitty_single_command_from(term_program: Option<&str>) -> bool {
+    term_program.is_some_and(|value| {
+        value.eq_ignore_ascii_case("vscode") || value.eq_ignore_ascii_case("xterm.js")
+    })
+}
+
 fn detect_kitty_graphics_from(
     term: Option<&str>,
     term_program: Option<&str>,
@@ -639,6 +647,23 @@ mod tests {
         assert!(!disabled.capabilities().kitty_graphics);
         assert!(enabled.capabilities().kitty_graphics);
         Ok(())
+    }
+
+    #[test]
+    fn kitty_single_command_workaround_requires_an_xterm_js_hint() {
+        for program in [
+            None,
+            Some(""),
+            Some("kitty"),
+            Some("Ghostty"),
+            Some("WezTerm"),
+            Some("xterm"),
+        ] {
+            assert!(!kitty_single_command_from(program), "{program:?}");
+        }
+        for program in ["vscode", "VSCode", "xterm.js", "XTERM.JS"] {
+            assert!(kitty_single_command_from(Some(program)), "{program}");
+        }
     }
 
     #[test]
@@ -807,20 +832,34 @@ mod tests {
             canvas.draw_image(Rect::new(0, 0, 1, 1), &image)?;
             Ok(())
         })?;
-        let mut backend = CrosstermBackend::new(FailWriteOnceAfter::default())?
-            .with_kitty_graphics(KittyGraphicsMode::Enabled);
-        backend.apply_state(&TerminalState {
-            screen: ScreenMode::Alternate,
-            ..TerminalState::default()
-        })?;
-        backend.writer.fail_after = Some(200);
+        for fail_after in [200, 5_000] {
+            let mut backend = CrosstermBackend::new(FailWriteOnceAfter::default())?
+                .with_kitty_graphics(KittyGraphicsMode::Enabled);
+            // Test both the first APC and a continuation regardless of terminal hints.
+            backend.kitty = kitty::KittyState::default();
+            backend.apply_state(&TerminalState {
+                screen: ScreenMode::Alternate,
+                ..TerminalState::default()
+            })?;
+            backend.writer.fail_after = Some(fail_after);
 
-        assert!(backend.write_patch(frame.patch()).is_err());
-        let retry_start = backend.writer.bytes.len();
-        assert_eq!(backend.write_patch(frame.patch())?, WriteOutcome::Applied);
+            assert!(backend.write_patch(frame.patch()).is_err());
+            if fail_after == 5_000 {
+                let continuation = b"\x1b_Gm=0,q=2;";
+                assert!(
+                    backend
+                        .writer
+                        .bytes
+                        .windows(continuation.len())
+                        .any(|bytes| bytes == continuation)
+                );
+            }
+            let retry_start = backend.writer.bytes.len();
+            assert_eq!(backend.write_patch(frame.patch())?, WriteOutcome::Applied);
 
-        let recovery_and_delete = b"\x1b\\\x1b[?2026l\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
-        assert!(backend.writer.bytes[retry_start..].starts_with(recovery_and_delete));
+            let recovery_and_delete = b"\x1b\\\x1b[?2026l\x1b_Ga=d,d=I,i=1,q=2\x1b\\";
+            assert!(backend.writer.bytes[retry_start..].starts_with(recovery_and_delete));
+        }
         Ok(())
     }
 

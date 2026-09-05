@@ -16,10 +16,12 @@ const MAX_ENCODED_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENCODED_CACHE_ENTRIES: usize = 256;
 const MAX_PREPARED_IMAGE_BYTES: usize = 64 * 1024 * 1024;
 const MIN_COMPRESSION_BYTES: usize = 1_024;
+const MAX_CHUNK_BYTES: usize = 4_096;
 const TRANSFER_BUCKET_PIXELS: u32 = 64;
 
 #[derive(Debug)]
 pub(crate) struct KittyState {
+    single_command: bool,
     mappings: HashMap<ImageId, u32>,
     possibly_owned: BTreeSet<u32>,
     next_id: u32,
@@ -30,6 +32,7 @@ pub(crate) struct KittyState {
 impl Default for KittyState {
     fn default() -> Self {
         Self {
+            single_command: false,
             mappings: HashMap::new(),
             possibly_owned: BTreeSet::new(),
             next_id: 1,
@@ -40,6 +43,7 @@ impl Default for KittyState {
 }
 
 pub(crate) struct PreparedUpdate<'a> {
+    single_command: bool,
     recover_stream: bool,
     delete_ids: Vec<u32>,
     placements: Vec<PreparedPlacement<'a>>,
@@ -164,6 +168,13 @@ impl EncodingCache {
 }
 
 impl KittyState {
+    pub(crate) fn new(single_command: bool) -> Self {
+        Self {
+            single_command,
+            ..Self::default()
+        }
+    }
+
     pub(crate) fn prepare_with_viewport<'a>(
         &mut self,
         scene: &'a ImageScene,
@@ -248,6 +259,7 @@ impl KittyState {
         // be repaired by deleting a conservative superset on the next attempt.
         self.possibly_owned.extend(desired_wire_ids.iter().copied());
         Ok(PreparedUpdate {
+            single_command: self.single_command,
             recover_stream: self.stream_uncertain,
             delete_ids,
             placements,
@@ -339,7 +351,7 @@ pub(crate) fn write_update_content<W: Write>(
 ) -> io::Result<()> {
     for placement in &update.placements {
         if placement.upload {
-            write_image(writer, placement)?;
+            write_image(writer, placement, update.single_command)?;
         } else {
             write_placement(writer, placement)?;
         }
@@ -361,7 +373,11 @@ pub(crate) fn write_deletions<W: Write>(writer: &mut W, ids: &[u32]) -> io::Resu
     Ok(())
 }
 
-fn write_image<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -> io::Result<()> {
+fn write_image<W: Write>(
+    writer: &mut W,
+    prepared: &PreparedPlacement<'_>,
+    single_command: bool,
+) -> io::Result<()> {
     let id = prepared.id;
     let placement = prepared.placement;
     let image = placement.image();
@@ -371,12 +387,19 @@ fn write_image<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -> io
     let x = u16::try_from(destination.x).map_err(|_| invalid_coordinate(destination.x))?;
     let y = u16::try_from(destination.y).map_err(|_| invalid_coordinate(destination.y))?;
     writer.queue(MoveTo(x, y))?;
-    // xterm.js accepts direct payloads of this size but fails to complete some
-    // multi-command uploads. Auto detection already excludes indirect sessions.
+    // Only identified xterm.js sessions need the single-command workaround.
+    // Other terminals enforce Kitty's 4096-byte base64 payload limit.
+    let first_len = if single_command {
+        encoded.payload.len()
+    } else {
+        encoded.payload.len().min(MAX_CHUNK_BYTES)
+    };
+    let (first, remaining) = encoded.payload.split_at(first_len);
+    let more = if remaining.is_empty() { "" } else { ",m=1" };
     let compression = if encoded.compressed { ",o=z" } else { "" };
     write!(
         writer,
-        "\x1b_Ga=T,f={},t=d{compression},s={},v={},i={id},x={},y={},w={},h={},c={},r={},C=1,q=2,z={};{}\x1b\\",
+        "\x1b_Ga=T,f={},t=d{compression},s={},v={},i={id},x={},y={},w={},h={},c={},r={},C=1,q=2,z={}{more};{first}\x1b\\",
         encoded.format,
         encoded.size.width,
         encoded.size.height,
@@ -387,8 +410,14 @@ fn write_image<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -> io
         destination.width,
         destination.height,
         prepared.z_index,
-        encoded.payload,
     )?;
+    let mut chunks = remaining.as_bytes().chunks(MAX_CHUNK_BYTES);
+    while let Some(chunk) = chunks.next() {
+        let more = u8::from(chunks.len() > 0);
+        write!(writer, "\x1b_Gm={more},q=2;")?;
+        writer.write_all(chunk)?;
+        writer.write_all(b"\x1b\\")?;
+    }
     Ok(())
 }
 
@@ -956,43 +985,135 @@ mod tests {
 
     #[test]
     fn leaves_incompressible_uploads_uncompressed() -> Result<(), Box<dyn std::error::Error>> {
-        let pixels = pseudo_random_bytes(32 * 32 * 4);
-        let image = RgbaImage::new(32, 32, pixels.clone())?;
-        let scene =
-            ImageScene::from_placements([ImagePlacement::new(image, Rect::new(0, 0, 1, 1))]);
-        let mut state = KittyState::default();
-        let update = state.prepare_with_viewport(&scene, None)?;
-        let mut output = Vec::new();
-
-        write_update(&mut output, &update)?;
-
-        let output = String::from_utf8(output)?;
-        assert!(output.contains("f=32,t=d,s=32,v=32"));
-        assert!(!output.contains("o=z"));
-        let payload = output
-            .split("z=1;")
-            .nth(1)
-            .and_then(|value| value.split("\x1b\\").next())
-            .ok_or("missing raw payload")?;
-        assert_eq!(STANDARD.decode(payload)?, pixels);
+        // Include exact chunk boundaries and the first pixel past each boundary.
+        for width in [1, 768, 769, 1_536, 1_537] {
+            let image = RgbaImage::new(width, 1, pseudo_random_bytes(width as usize * 4))?;
+            let commands = assert_direct_transfer(image, false, false)?;
+            let encoded_len = (width as usize * 4).div_ceil(3) * 4;
+            assert_eq!(commands, encoded_len.div_ceil(4_096));
+        }
         Ok(())
     }
 
     #[test]
-    fn writes_image_as_one_direct_payload() -> Result<(), Box<dyn std::error::Error>> {
-        let image = RgbaImage::new(1_025, 1, pseudo_random_bytes(1_025 * 4))?;
-        let scene =
-            ImageScene::from_placements([ImagePlacement::new(image, Rect::new(0, 0, 1, 1))]);
-        let mut state = KittyState::default();
+    fn kitty_direct_transfer_obeys_protocol_chunk_limit() -> Result<(), Box<dyn std::error::Error>>
+    {
+        for (compressed, pixels) in [
+            (false, pseudo_random_bytes(512 * 512 * 4)),
+            (true, pseudo_random_bytes(8_192).repeat(128)),
+        ] {
+            let image = RgbaImage::new(512, 512, pixels)?;
+            let commands = assert_direct_transfer(image, compressed, false)?;
+            assert!(
+                commands > 2,
+                "exercise first, continuation, and final commands"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn xterm_js_workaround_keeps_one_direct_payload() -> Result<(), Box<dyn std::error::Error>> {
+        for (compressed, pixels) in [
+            (false, pseudo_random_bytes(512 * 512 * 4)),
+            (true, pseudo_random_bytes(8_192).repeat(128)),
+        ] {
+            let image = RgbaImage::new(512, 512, pixels)?;
+            assert_eq!(assert_direct_transfer(image, compressed, true)?, 1);
+        }
+        Ok(())
+    }
+
+    fn assert_direct_transfer(
+        image: RgbaImage,
+        compressed: bool,
+        single_command: bool,
+    ) -> Result<usize, Box<dyn std::error::Error>> {
+        let width = image.width().to_string();
+        let height = image.height().to_string();
+        let pixels = image.pixels().to_vec();
+        let scene = ImageScene::from_placements([
+            ImagePlacement::new(image.clone(), Rect::new(2, 3, 4, 5)),
+            ImagePlacement::new(image, Rect::new(6, 7, 4, 5)),
+        ]);
+        let mut state = KittyState::new(single_command);
         let update = state.prepare_with_viewport(&scene, None)?;
         let mut output = Vec::new();
-
         write_update(&mut output, &update)?;
 
         let output = String::from_utf8(output)?;
-        assert!(!output.contains("\x1b_Gm="));
-        assert!(!output.contains("m=1"));
-        Ok(())
+        let mut remaining = output
+            .strip_prefix("\x1b[4;3H")
+            .ok_or("missing cursor move")?
+            .strip_suffix(&format!(
+                "\x1b[8;7H\x1b_Ga=p,i=1,x=0,y=0,w={width},h={height},c=4,r=5,C=1,q=2,z=2\x1b\\"
+            ))
+            .ok_or("missing separate placement after completed upload")?;
+        let mut payload = String::new();
+        let mut commands = 0;
+        while !remaining.is_empty() {
+            let (command, rest) = remaining
+                .strip_prefix("\x1b_G")
+                .ok_or("expected graphics APC")?
+                .split_once("\x1b\\")
+                .ok_or("unterminated graphics APC")?;
+            let (header, chunk) = command.split_once(';').ok_or("missing payload")?;
+            assert!(
+                single_command || chunk.len() <= 4_096,
+                "graphics payload is {} bytes, exceeding Kitty's 4096-byte limit",
+                chunk.len()
+            );
+            assert!(!chunk.is_empty());
+            assert_eq!(chunk.len() % 4, 0);
+            let mut metadata = HashMap::new();
+            for field in header.split(',') {
+                let (key, value) = field.split_once('=').ok_or("invalid metadata")?;
+                assert!(metadata.insert(key, value).is_none(), "duplicate key {key}");
+            }
+            let mut expected = HashMap::from([("q", "2")]);
+            if commands > 0 || !rest.is_empty() {
+                expected.insert("m", if rest.is_empty() { "0" } else { "1" });
+            }
+            if commands == 0 {
+                expected.extend([
+                    ("a", "T"),
+                    ("f", "32"),
+                    ("t", "d"),
+                    ("s", &width),
+                    ("v", &height),
+                    ("i", "1"),
+                    ("x", "0"),
+                    ("y", "0"),
+                    ("w", &width),
+                    ("h", &height),
+                    ("c", "4"),
+                    ("r", "5"),
+                    ("C", "1"),
+                    ("z", "1"),
+                ]);
+                if compressed {
+                    expected.insert("o", "z");
+                }
+            }
+            assert_eq!(metadata, expected);
+            if !rest.is_empty() {
+                assert!(!single_command);
+                assert_eq!(chunk.len(), 4_096);
+            }
+            payload.push_str(chunk);
+            commands += 1;
+            remaining = rest;
+        }
+        let bytes = STANDARD.decode(payload)?;
+        let decoded = if compressed {
+            let mut decoded = Vec::new();
+            ZlibDecoder::new(bytes.as_slice()).read_to_end(&mut decoded)?;
+            decoded
+        } else {
+            bytes
+        };
+        assert_eq!(decoded, pixels);
+        Ok(commands)
     }
 
     fn pseudo_random_bytes(length: usize) -> Vec<u8> {
