@@ -1,4 +1,7 @@
-//! Matched semantic and character-frame contracts.
+//! Matched semantic and character-frame contracts, plus complete overlay cell styles.
+
+#[path = "support/overlay_cells.rs"]
+mod overlay_cells;
 
 use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OVERLAY_BACKGROUND_KEY,
@@ -12,9 +15,9 @@ use arborui_comparison_collection_lab_ratatui::{
     ComparisonAction, CountingBackend, LogSemanticState, OVERLAY_RESIZE_STORM, OverlayFocus,
     OverlaySemanticState, RatatuiCollectionLab, RatatuiLogLab, RatatuiOverlayLab, RatatuiTableLab,
     RatatuiUnicodeLab, STANDARD_RESIZE_STORM, SemanticState, TableSemanticState,
-    UNICODE_RESIZE_STORM, UNICODE_RESIZE_STORM_OFFSET, UnicodeSemanticState, draw_terminal,
-    draw_test_frame, draw_test_log_frame, draw_test_overlay_frame, draw_test_table_frame,
-    draw_test_unicode_frame,
+    UNICODE_RESIZE_STORM, UNICODE_RESIZE_STORM_OFFSET, UnicodeSemanticState, draw_overlay_terminal,
+    draw_terminal, draw_test_frame, draw_test_log_frame, draw_test_overlay_frame,
+    draw_test_table_frame, draw_test_unicode_frame,
 };
 
 #[test]
@@ -154,12 +157,23 @@ fn canonical_unicode_trace_matches_semantics_and_characters() {
 }
 
 #[test]
-fn canonical_overlay_trace_matches_semantics_and_characters() {
+fn canonical_overlay_trace_matches_semantics_characters_and_styles() {
     let mut arborui = TestApp::new(OverlayLab::new(40, 12), Size::new(40, 12));
     let mut ratatui = RatatuiOverlayLab::new(40, 12);
     let mut terminal = Terminal::new(TestBackend::new(40, 12)).expect("test terminal must open");
 
     assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    for _ in 0..2 {
+        arborui.key(KeyCode::Tab);
+        ratatui.focus_next();
+        assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    }
+    for _ in 0..2 {
+        arborui.key_with(KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+        ratatui.focus_previous();
+        assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    }
 
     arborui.key(KeyCode::Enter);
     ratatui.apply(OverlayAction::Open);
@@ -175,6 +189,18 @@ fn canonical_overlay_trace_matches_semantics_and_characters() {
     ratatui.focus_previous();
     assert_overlay_frame(&arborui, &ratatui, &mut terminal);
 
+    for _ in 0..2 {
+        for (width, height) in OVERLAY_RESIZE_STORM {
+            arborui.resize(Size::new(width, height));
+            ratatui.apply(OverlayAction::Resize { width, height });
+            terminal.backend_mut().resize(width, height);
+            assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+        }
+        arborui.key_with(KeyCode::Tab, KeyModifiers::SHIFT, KeyEventKind::Press);
+        ratatui.focus_previous();
+        assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    }
+
     assert_eq!(arborui.application().model().background_activations(), 0);
     assert_eq!(ratatui.model().background_activations(), 0);
 
@@ -184,6 +210,7 @@ fn canonical_overlay_trace_matches_semantics_and_characters() {
 
     arborui.key(KeyCode::Enter);
     ratatui.apply(OverlayAction::Open);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
     arborui.key(KeyCode::Enter);
     ratatui.apply(OverlayAction::Confirm);
     assert_overlay_frame(&arborui, &ratatui, &mut terminal);
@@ -196,6 +223,87 @@ fn canonical_overlay_trace_matches_semantics_and_characters() {
     });
     terminal.backend_mut().resize(44, 14);
     assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.key(KeyCode::Tab);
+    ratatui.focus_next();
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.resize(Size::new(40, 12));
+    ratatui.apply(OverlayAction::Resize {
+        width: 40,
+        height: 12,
+    });
+    terminal.backend_mut().resize(40, 12);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::ActivateBackground);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    assert_eq!(ratatui.semantic_state().background_activations, 1);
+    arborui.key(KeyCode::Tab);
+    ratatui.focus_next();
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::Open);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.resize(Size::new(44, 14));
+    ratatui.apply(OverlayAction::Resize {
+        width: 44,
+        height: 14,
+    });
+    terminal.backend_mut().resize(44, 14);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.key(KeyCode::Tab);
+    ratatui.focus_next();
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::Cancel);
+    assert_overlay_frame(&arborui, &ratatui, &mut terminal);
+    assert_eq!(ratatui.semantic_state().focus, OverlayFocus::Open);
+    assert_eq!(ratatui.semantic_state().confirmations, 1);
+}
+
+#[test]
+fn overlay_focus_next_changes_twenty_styled_cells_on_both_sides() {
+    let mut arborui = TestApp::new(OverlayLab::new(40, 12), Size::new(40, 12));
+    let mut ratatui = RatatuiOverlayLab::new(40, 12);
+    let mut terminal =
+        Terminal::new(CountingBackend::new(40, 12)).expect("counting terminal must open");
+    arborui.key(KeyCode::Enter);
+    ratatui.apply(OverlayAction::Open);
+    draw_overlay_terminal(&mut terminal, &ratatui).expect("open frame must draw");
+    terminal.backend_mut().reset_counts();
+    let previous = arborui.frame().clone();
+    let patch_count = arborui.frame_patches().len();
+
+    arborui.key(KeyCode::Tab);
+    ratatui.focus_next();
+    draw_overlay_terminal(&mut terminal, &ratatui).expect("focus frame must draw");
+
+    assert_eq!(arborui_overlay_state(&arborui), ratatui.semantic_state());
+    assert_eq!(ratatui.semantic_state().focus, OverlayFocus::Cancel);
+    assert_eq!(previous.characters(), arborui.frame().characters());
+    let changed_cells = previous
+        .cells()
+        .iter()
+        .zip(arborui.frame().cells())
+        .filter(|(previous, current)| {
+            overlay_cells::arborui_cell(previous) != overlay_cells::arborui_cell(current)
+        })
+        .count();
+    assert_eq!(changed_cells, 20);
+    let submitted_cells = arborui.frame_patches()[patch_count..]
+        .iter()
+        .flat_map(|patch| &patch.runs)
+        .map(|run| run.cells.len())
+        .sum::<usize>();
+    assert_eq!(submitted_cells, 20);
+    assert_eq!(
+        terminal.backend().changed_cells(),
+        changed_cells,
+        "Ratatui focus-next must submit the same 20 visibly changed cells as ArborUI"
+    );
+    assert_eq!(terminal.backend().draws(), 1);
+    assert_eq!(terminal.backend().flushes(), 1);
 }
 
 #[test]
@@ -596,6 +704,31 @@ fn assert_overlay_frame(
         draw_test_overlay_frame(terminal, ratatui).expect("Ratatui overlay frame must draw");
     assert_eq!(arborui_overlay_state(arborui), ratatui.semantic_state());
     assert_eq!(arborui.frame().characters(), frame);
+    let expected = arborui.frame().cells();
+    let actual = &terminal.backend().buffer().content;
+    assert_eq!(expected.len(), actual.len());
+    let differences = expected
+        .iter()
+        .zip(actual)
+        .enumerate()
+        .filter_map(|(index, (expected, actual))| {
+            let expected = overlay_cells::arborui_cell(expected);
+            let actual = overlay_cells::ratatui_cell(actual);
+            (expected != actual).then_some((
+                index % usize::from(arborui.frame().size().width),
+                index / usize::from(arborui.frame().size().width),
+                expected,
+                actual,
+            ))
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        differences.is_empty(),
+        "{} overlay styled-cell differences at {:?}; first cells (x, y, ArborUI, Ratatui): {:#?}",
+        differences.len(),
+        ratatui.semantic_state(),
+        &differences[..differences.len().min(8)]
+    );
 }
 
 fn arborui_overlay_state(app: &TestApp<OverlayLab>) -> OverlaySemanticState {

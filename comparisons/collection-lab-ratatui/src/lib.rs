@@ -920,20 +920,26 @@ impl RatatuiOverlayLab {
             "Persistent workspace",
             Style::new(),
         );
-        paint_clipped(
-            buffer,
-            area.x.saturating_add(2),
-            area.y.saturating_add(4),
-            "[ Open dialog ]",
-            Style::new(),
-        );
-        paint_clipped(
-            buffer,
-            area.x.saturating_add(2),
-            area.y.saturating_add(5),
-            "[ Background action ]",
-            Style::new(),
-        );
+        for (row, label, focus) in [
+            (4, "[ Open dialog ]", OverlayFocus::Open),
+            (5, "[ Background action ]", OverlayFocus::Background),
+        ] {
+            let control = Rect::new(
+                area.x.saturating_add(2),
+                area.y.saturating_add(row),
+                area.width.saturating_sub(4),
+                1,
+            )
+            .intersection(area);
+            let style = if self.focus == focus {
+                Style::new().add_modifier(Modifier::REVERSED)
+            } else {
+                Style::new()
+            };
+            // Column children fill their content row, including trailing spaces.
+            buffer.set_style(control, style);
+            paint_clipped_width(buffer, control.x, control.y, label, control.width, style);
+        }
         paint_clipped_width(
             buffer,
             area.x.saturating_add(2),
@@ -944,10 +950,11 @@ impl RatatuiOverlayLab {
         );
 
         if self.model.dialog_open() {
-            buffer.set_style(area, Style::new().bg(Color::Black));
+            // The opaque scrim replaces lower cells, not just their backgrounds.
             for y in area.top()..area.bottom() {
                 for x in area.left()..area.right() {
-                    buffer[(x, y)].set_symbol(" ");
+                    buffer[(x, y)].reset();
+                    buffer[(x, y)].set_bg(Color::Black);
                 }
             }
             let dialog = Rect::new(
@@ -957,11 +964,14 @@ impl RatatuiOverlayLab {
                 26.min(area.width),
                 7.min(area.height),
             );
+            let panel_style = Style::new().fg(Color::White).bg(Color::Black);
+            buffer.set_style(dialog, panel_style);
             paint_block(
                 buffer,
                 dialog,
                 "Confirm action",
-                Style::new().fg(Color::LightCyan),
+                // ArborUI's custom border paint does not inherit the panel style.
+                Style::reset().fg(Color::LightCyan),
             );
             paint_clipped(
                 buffer,
@@ -970,14 +980,26 @@ impl RatatuiOverlayLab {
                 "Delete selected item?",
                 Style::new(),
             );
-            paint_clipped_width(
-                buffer,
-                dialog.x.saturating_add(2),
-                dialog.y.saturating_add(4),
-                "[ Confirm ]  [ Cancel ]",
-                dialog.width.saturating_sub(4),
-                Style::new(),
-            );
+            for (offset, label, focus) in [
+                (0, "[ Confirm ]", OverlayFocus::Confirm),
+                (13, "[ Cancel ]", OverlayFocus::Cancel),
+            ] {
+                let style = if self.focus == focus {
+                    panel_style.add_modifier(Modifier::REVERSED)
+                } else {
+                    panel_style
+                };
+                // The 22-cell content clip leaves 11 Confirm cells and 9 Cancel
+                // cells visible; the two-cell gap never receives focus styling.
+                paint_clipped_width(
+                    buffer,
+                    dialog.x.saturating_add(2).saturating_add(offset),
+                    dialog.y.saturating_add(4),
+                    label,
+                    dialog.width.saturating_sub(4).saturating_sub(offset),
+                    style,
+                );
+            }
         }
     }
 }
