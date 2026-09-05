@@ -2930,4 +2930,6 @@ mod tests {
         assert_eq!(prepared.patch().cursor, CursorState::HIDDEN);
         Ok(())
     }
+
+    mod image_stacking;
 }
