@@ -73,9 +73,9 @@ pub enum ComparisonAction {
     Home,
     /// Move to the final item.
     End,
-    /// Move upward by one viewport.
+    /// Move one viewport above the active item's top, advancing at least one item.
     PageUp,
-    /// Move downward by one viewport.
+    /// Move one viewport below the active item's top, advancing at least one item.
     PageDown,
     /// Select the active item.
     SelectActive,
@@ -550,14 +550,18 @@ impl RatatuiCollectionLab {
             ComparisonAction::Down => current.saturating_add(1).min(last),
             ComparisonAction::Home => 0,
             ComparisonAction::End => last,
-            ComparisonAction::PageUp => {
-                self.index_for_offset(self.scroll.saturating_sub(self.viewport_height))
+            ComparisonAction::PageUp | ComparisonAction::PageDown => {
+                let top = self.item_bounds(current).map_or(0, |(top, _)| top);
+                // Page from the active position, not the independently controlled viewport.
+                if action == ComparisonAction::PageUp {
+                    self.index_for_offset(top.saturating_sub(self.viewport_height))
+                        .min(current.saturating_sub(1))
+                } else {
+                    self.index_for_offset(top.saturating_add(self.viewport_height))
+                        .max(current.saturating_add(1))
+                        .min(last)
+                }
             }
-            ComparisonAction::PageDown => self.index_for_offset(
-                self.scroll
-                    .saturating_add(self.viewport_height)
-                    .min(self.max_scroll()),
-            ),
             _ => current,
         };
         self.active = Some(self.items[target].key);
@@ -571,7 +575,8 @@ impl RatatuiCollectionLab {
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll.saturating_add(self.viewport_height) {
-            self.scroll = bottom.saturating_sub(self.viewport_height);
+            // Top-align oversized rows so repeated reveals cannot oscillate.
+            self.scroll = bottom.saturating_sub(self.viewport_height).min(top);
         }
         self.scroll = self.scroll.min(self.max_scroll());
     }

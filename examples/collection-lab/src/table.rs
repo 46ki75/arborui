@@ -168,9 +168,9 @@ pub enum TableAction {
     Home,
     /// Move to the final row.
     End,
-    /// Move upward by one viewport.
+    /// Move upward by one viewport from the active row.
     PageUp,
-    /// Move downward by one viewport.
+    /// Move downward by one viewport from the active row.
     PageDown,
     /// Select the active row.
     SelectActive,
@@ -364,11 +364,8 @@ impl TableModel {
             TableAction::Down => current.saturating_add(1).min(last),
             TableAction::Home => 0,
             TableAction::End => last,
-            TableAction::PageUp => self.scroll.saturating_sub(self.viewport_height),
-            TableAction::PageDown => self
-                .scroll
-                .saturating_add(self.viewport_height)
-                .min(self.max_scroll()),
+            TableAction::PageUp => current.saturating_sub(self.viewport_height),
+            TableAction::PageDown => current.saturating_add(self.viewport_height).min(last),
             _ => current,
         };
         self.active = Some(self.rows[target].key);
@@ -598,6 +595,69 @@ fn table_row(values: [&str; 5], columns: TableColumns, style: Style) -> Element<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paging_table_repeated_down_reaches_last_row() {
+        let mut model = TableModel::new(100, 48, 12);
+        assert_eq!(model.viewport_height(), 7);
+        for expected in (7..=98).step_by(7).chain([99, 99]) {
+            model.apply(TableAction::PageDown);
+            assert_eq!(model.active_key(), Some(expected));
+            assert_eq!(model.scroll_offset(), expected as usize - 6);
+        }
+    }
+
+    #[test]
+    fn paging_table_up_from_end_reaches_first_row() {
+        let mut model = TableModel::new(100, 48, 12);
+        model.apply(TableAction::End);
+        for expected in (0..=13).rev().map(|page| 1 + page * 7).chain([0, 0]) {
+            model.apply(TableAction::PageUp);
+            assert_eq!(model.active_key(), Some(expected));
+            assert_eq!(model.scroll_offset(), expected as usize);
+        }
+    }
+
+    #[test]
+    fn paging_table_ignores_wheel_detachment_and_preserves_selection() {
+        let mut model = TableModel::new(100, 48, 12);
+        model.apply(TableAction::SelectActive);
+        model.apply(TableAction::Scrolled(Point::new(0, i32::MAX)));
+        assert_eq!(model.scroll_offset(), 93);
+        model.apply(TableAction::PageDown);
+        assert_eq!(model.active_key(), Some(7));
+        assert_eq!(model.scroll_offset(), 7);
+        model.apply(TableAction::End);
+        model.apply(TableAction::Scrolled(Point::new(0, i32::MIN)));
+        assert_eq!(model.scroll_offset(), 0);
+        model.apply(TableAction::PageUp);
+        assert_eq!(model.active_key(), Some(92));
+        assert_eq!(model.scroll_offset(), 86);
+        assert_eq!(model.selected_key(), Some(0));
+    }
+
+    #[test]
+    fn paging_table_empty_single_underfilled_and_saturated_viewports() {
+        for viewport in [1, 7, usize::MAX] {
+            for count in [0usize, 1, 3] {
+                let mut model = TableModel::new(count, 48, 12);
+                model.viewport_height = viewport;
+                for step in 1usize..=4 {
+                    model.apply(TableAction::PageDown);
+                    let expected = count
+                        .checked_sub(1)
+                        .map(|last| step.saturating_mul(viewport).min(last) as u64);
+                    assert_eq!(model.active_key(), expected);
+                    assert!(model.scroll_offset() <= model.max_scroll());
+                }
+                for _ in 0..4 {
+                    model.apply(TableAction::PageUp);
+                }
+                assert_eq!(model.active_key(), (count > 0).then_some(0));
+                assert_eq!(model.scroll_offset(), 0);
+            }
+        }
+    }
 
     #[test]
     fn table_model_preserves_selection_across_updates_and_resize() {

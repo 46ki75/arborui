@@ -345,9 +345,9 @@ pub enum Message {
     Home,
     /// Move to the final item.
     End,
-    /// Move upward by one viewport.
+    /// Move one viewport above the active item's top, advancing at least one item.
     PageUp,
-    /// Move downward by one viewport.
+    /// Move one viewport below the active item's top, advancing at least one item.
     PageDown,
     /// Select the active item.
     SelectActive,
@@ -492,14 +492,18 @@ impl CollectionLab {
             Message::Down => current.saturating_add(1).min(last),
             Message::Home => 0,
             Message::End => last,
-            Message::PageUp => {
-                self.index_for_offset(self.scroll.saturating_sub(self.viewport_height))
+            Message::PageUp | Message::PageDown => {
+                let top = self.item_bounds(current).map_or(0, |(top, _)| top);
+                // Page from the active position, not the independently controlled viewport.
+                if message == Message::PageUp {
+                    self.index_for_offset(top.saturating_sub(self.viewport_height))
+                        .min(current.saturating_sub(1))
+                } else {
+                    self.index_for_offset(top.saturating_add(self.viewport_height))
+                        .max(current.saturating_add(1))
+                        .min(last)
+                }
             }
-            Message::PageDown => self.index_for_offset(
-                self.scroll
-                    .saturating_add(self.viewport_height)
-                    .min(self.max_scroll()),
-            ),
             _ => current,
         };
         self.active = Some(self.items[target].key);
@@ -523,7 +527,8 @@ impl CollectionLab {
         if top < self.scroll {
             self.scroll = top;
         } else if bottom > self.scroll.saturating_add(self.viewport_height) {
-            self.scroll = bottom.saturating_sub(self.viewport_height);
+            // Top-align oversized rows so repeated reveals cannot oscillate.
+            self.scroll = bottom.saturating_sub(self.viewport_height).min(top);
         }
         self.scroll = self.scroll.min(self.max_scroll());
     }
@@ -736,6 +741,141 @@ impl Application for CollectionLab {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn paging_fixed_repeated_down_reaches_last_item() {
+        let mut app = CollectionLab::new(CollectionMode::Fixed, 100, 8);
+        for expected in (8..=96).step_by(8).chain([99, 99]) {
+            app.move_active(Message::PageDown);
+            assert_eq!(app.active_key(), Some(expected));
+            assert_eq!(app.scroll_offset(), expected as usize - 7);
+        }
+    }
+
+    #[test]
+    fn paging_fixed_up_from_end_reaches_first_item() {
+        let mut app = CollectionLab::new(CollectionMode::Fixed, 100, 8);
+        app.move_active(Message::End);
+        for expected in (0..=11).rev().map(|page| 3 + page * 8).chain([0, 0]) {
+            app.move_active(Message::PageUp);
+            assert_eq!(app.active_key(), Some(expected));
+            assert_eq!(app.scroll_offset(), expected as usize);
+        }
+    }
+
+    #[test]
+    fn paging_variable_uses_cell_distance_and_always_progresses() {
+        for (viewport, down, up) in [
+            (
+                1,
+                vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+                vec![8, 7, 6, 5, 4, 3, 2, 1, 0],
+            ),
+            (
+                2,
+                vec![1, 2, 3, 4, 5, 6, 7, 8, 9],
+                vec![8, 7, 5, 4, 2, 1, 0],
+            ),
+            (8, vec![4, 8, 9], vec![5, 1, 0]),
+        ] {
+            let mut app = CollectionLab::new(CollectionMode::Variable, 10, viewport);
+            for (message, keys) in [(Message::PageDown, down), (Message::PageUp, up)] {
+                for expected in keys {
+                    app.move_active(message);
+                    assert_eq!(
+                        app.active_key(),
+                        Some(expected),
+                        "{viewport} cells, {message:?}"
+                    );
+                    assert!(app.scroll_offset() <= app.max_scroll());
+                    let (top, bottom) = app.item_bounds(expected as usize).expect("item exists");
+                    assert!(top < app.scroll_offset() + viewport);
+                    assert!(bottom > app.scroll_offset());
+                }
+                let boundary = (app.active_key(), app.scroll_offset());
+                app.move_active(message);
+                assert_eq!((app.active_key(), app.scroll_offset()), boundary);
+            }
+        }
+    }
+
+    #[test]
+    fn paging_uses_reordered_positions_not_stable_keys() {
+        for (mode, down, up) in [
+            (CollectionMode::Fixed, vec![1, 0], vec![8, 9]),
+            (CollectionMode::Variable, vec![5, 2, 0], vec![4, 8, 9]),
+        ] {
+            let mut app = CollectionLab::new(mode, 10, 8);
+            app.selected = Some(0);
+            app.items.reverse();
+            app.rebuild_providers();
+            assert_eq!(app.active_key(), Some(0));
+            app.move_active(Message::Home);
+            for (message, keys) in [(Message::PageDown, down), (Message::PageUp, up)] {
+                for expected in keys {
+                    app.move_active(message);
+                    assert_eq!(app.active_key(), Some(expected), "{mode:?}, {message:?}");
+                    assert_eq!(app.selected_key(), Some(0));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paging_empty_single_and_underfilled_collections() {
+        for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
+            for count in [0, 1, 3] {
+                let mut app = CollectionLab::new(mode, count, 8);
+                for _ in 0..2 {
+                    app.move_active(Message::PageDown);
+                    assert_eq!(app.active_key(), count.checked_sub(1).map(|key| key as u64));
+                    assert_eq!(app.scroll_offset(), 0);
+                }
+                for _ in 0..2 {
+                    app.move_active(Message::PageUp);
+                    assert_eq!(app.active_key(), (count > 0).then_some(0));
+                    assert_eq!(app.scroll_offset(), 0);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn paging_tall_final_row_is_boundary_idempotent() {
+        let mut app = CollectionLab::new(CollectionMode::Variable, 3, 1);
+        app.move_active(Message::End);
+        let boundary = (app.active_key(), app.scroll_offset());
+        for _ in 0..3 {
+            app.move_active(Message::PageDown);
+            assert_eq!((app.active_key(), app.scroll_offset()), boundary);
+        }
+    }
+
+    #[test]
+    fn paging_saturates_cell_offsets_without_losing_item_progress() {
+        for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
+            let mut app = CollectionLab::new(mode, 3, usize::MAX);
+            app.move_active(Message::End);
+            app.move_active(Message::PageDown);
+            assert_eq!(app.active_key(), Some(2));
+            app.move_active(Message::PageUp);
+            assert_eq!(app.active_key(), Some(0));
+            app.move_active(Message::PageDown);
+            assert_eq!(app.active_key(), Some(2));
+            assert_eq!(app.scroll_offset(), 0);
+        }
+
+        let mut app = CollectionLab::new(CollectionMode::Variable, 3, 8);
+        app.items[0].height = NonZeroUsize::MAX;
+        app.rebuild_providers();
+        for expected in [1, 2, 2] {
+            app.move_active(Message::PageDown);
+            assert_eq!(app.active_key(), Some(expected));
+            assert!(app.scroll_offset() <= app.max_scroll());
+        }
+        app.move_active(Message::PageUp);
+        assert_eq!(app.active_key(), Some(0));
+    }
 
     #[test]
     fn fixed_range_is_bounded_by_visible_rows_and_overscan() {
