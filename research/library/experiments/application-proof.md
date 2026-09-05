@@ -354,6 +354,16 @@ showing that visible text changes still pass through complete table-row layout.
 The deterministic update intentionally excludes thread scheduling and ingress
 latency, which Focus Queue measures separately.
 
+Issue #24 correction: the historical paired overlay figures and conclusions in
+this document, including latency, ANSI output, memory, phase attribution, and
+overlay resize-storm results, are withdrawn as matched-work evidence. Ratatui
+previously omitted visible focus styling: focus-next changed zero cells versus
+ArborUI's 20 at 40x12. Complete styled-cell parity now covers blank cells, scrim
+colors, clipped focus spans, focus transitions, restoration, and focused resize.
+Replacement measurements require the corrected rendering and bounded measurement
+history (#25), with serial Criterion and separate output/memory/phase probes. No
+replacement timings are recorded in this historical section.
+
 The completed overlay workload measures cold initial, open, focus-next, cancel,
 confirm, background activation, and resize-open turns. One optimized local run
 on 2026-07-17 produced these Criterion point estimates and ranges:

@@ -1038,6 +1038,13 @@ fn ratatui_overlay_metrics(scenario: OverlayScenario) -> OutputMetrics {
     }
     draw_test_overlay_terminal(&mut terminal, &application).expect("overlay frame must draw");
     let current = terminal.backend().buffer().clone();
+    if matches!(scenario, OverlayScenario::FocusNext) {
+        assert_eq!(
+            previous.diff_iter(&current).count(),
+            20,
+            "focus-next must change 20 Ratatui cells, not merely serialize an empty-diff reset"
+        );
+    }
     if matches!(scenario, OverlayScenario::ResizeOpen) {
         let blank = Buffer::empty(Rect::new(
             0,

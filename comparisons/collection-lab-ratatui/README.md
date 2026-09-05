@@ -261,11 +261,21 @@ diff emits reset commands and one flush.
 
 ## Overlay Workload Result
 
+Issue #24 correction: the historical paired overlay figures and conclusions in
+this document, including latency, ANSI output, memory, phase attribution, and
+overlay resize-storm results, are withdrawn as matched-work evidence. Ratatui
+previously omitted visible focus styling: focus-next changed zero cells versus
+ArborUI's 20 at 40x12. The corrected adapter is checked for complete styled-cell
+parity, including blank cells, scrim colors, and clipped focus spans. Replacement
+measurements require the corrected rendering and bounded measurement history
+(#25), with serial Criterion and separate output/memory/phase probes. No
+replacement timings are recorded in this historical section.
+
 The matched overlay uses the stable stack, opaque scrim, centered 26x7 dialog,
 focus and pointer policies described above. Deterministic checks require exact
-character and semantic parity at 40x12 for normal turns and 44x14 for resize
-while open. These are Criterion point estimates and measured ranges from the
-same 2026-07-17 local environment:
+character, style, and semantic parity at 40x12 for normal turns and 44x14 for
+resize while open. These are historical Criterion point estimates and measured
+ranges from the same 2026-07-17 local environment:
 
 | Scenario | ArborUI | Ratatui |
 | --- | ---: | ---: |
