@@ -69,7 +69,7 @@ pub enum TestError {
     Reconcile(ReconcileError),
     /// A different event was submitted while recovery retained an event.
     RecoveryEventMismatch {
-        /// Event retained for dispatch after the recovery frame commits.
+        /// Event retained until recovery returns successfully.
         pending: UiEvent,
         /// Event rejected to preserve input ordering.
         received: UiEvent,
@@ -157,6 +157,7 @@ pub struct TestApp<A: Application> {
 
 struct PendingRecovery {
     event: UiEvent,
+    dispatch: Option<DispatchReport>,
     turns: usize,
     committed_frames: usize,
 }
@@ -330,9 +331,11 @@ impl<A: Application> TestApp<A> {
     ///
     /// A structural mismatch triggers a matching frame commit before retrying
     /// the event. Backend failures leave that event pending: retry the same event
-    /// to resume recovery. A different event returns
-    /// [`TestError::RecoveryEventMismatch`] without being dispatched. The
-    /// returned dispatch report always describes actual routing.
+    /// to resume recovery without repeating a completed dispatch. A different
+    /// event returns [`TestError::RecoveryEventMismatch`] without being
+    /// dispatched. The returned dispatch report always describes actual routing.
+    /// A successful return acknowledges the event even if settling reports
+    /// deferred or unknown output.
     pub fn try_event(
         &mut self,
         event: UiEvent,
@@ -356,6 +359,7 @@ impl<A: Application> TestApp<A> {
                 self.runner.invalidate(arborui_ui::Invalidation::Recompose);
                 self.pending_recovery = Some(PendingRecovery {
                     event,
+                    dispatch: None,
                     turns: 0,
                     committed_frames: 0,
                 });
@@ -370,7 +374,7 @@ impl<A: Application> TestApp<A> {
             unreachable!("event recovery requires a pending event");
         };
 
-        while pending.turns < MAX_SETTLE_TURNS {
+        while pending.dispatch.is_none() && pending.turns < MAX_SETTLE_TURNS {
             pending.turns = pending.turns.saturating_add(1);
             let outcome = match self.runner.render_terminal(&mut self.terminal) {
                 Ok(outcome) => outcome,
@@ -400,17 +404,28 @@ impl<A: Application> TestApp<A> {
                     return Err(TestError::Reconcile(error));
                 }
             };
-            let mut settle = self.try_settle()?;
-            settle.turns = pending.turns.saturating_add(settle.turns);
-            settle.committed_frames = pending
-                .committed_frames
-                .saturating_add(settle.committed_frames);
-            return Ok((dispatch, settle));
+            pending.dispatch = Some(dispatch);
         }
 
-        let turns = pending.turns;
+        let Some(dispatch) = pending.dispatch else {
+            let turns = pending.turns;
+            self.pending_recovery = Some(pending);
+            return Err(TestError::SettleLimit { turns });
+        };
+
+        // Retain completed routing before settling can fail; retries must only
+        // finish output, never invoke borrowing handlers or enqueue messages again.
         self.pending_recovery = Some(pending);
-        Err(TestError::SettleLimit { turns })
+        let mut settle = self.try_settle()?;
+        let pending = self
+            .pending_recovery
+            .take()
+            .expect("settling preserves the pending recovery event");
+        settle.turns = pending.turns.saturating_add(settle.turns);
+        settle.committed_frames = pending
+            .committed_frames
+            .saturating_add(settle.committed_frames);
+        Ok((dispatch, settle))
     }
 
     /// Dispatches one normalized terminal event and settles immediate work.
@@ -511,6 +526,9 @@ impl<A: Application> TestApp<A> {
     }
 
     /// Fallible variant of [`settle`](Self::settle).
+    ///
+    /// Does not acknowledge a retained recovery event. Retry that event through
+    /// [`try_event`](Self::try_event) even after settling repairs output.
     pub fn try_settle(&mut self) -> Result<SettleReport, TestError> {
         let mut report = SettleReport {
             turns: 0,
