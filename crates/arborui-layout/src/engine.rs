@@ -178,6 +178,9 @@ impl Engine {
         if let Some((previous, style)) = self.effective_root {
             if previous != root && nodes.get(previous).is_some() {
                 self.set_backend_style(previous, style)?;
+                // Root computation overwrites parent-relative geometry even when
+                // the style is unchanged, so invalidate the root and its ancestors.
+                self.invalidate(previous)?;
             }
         }
 
