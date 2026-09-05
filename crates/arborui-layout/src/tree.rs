@@ -820,6 +820,309 @@ mod tests {
         Ok(())
     }
 
+    mod column_width_constraints {
+        use super::*;
+        use crate::AvailableSpace;
+
+        fn wrap_five_chars(input: MeasureInput) -> Size {
+            let width = input.known_width.unwrap_or(match input.available_width {
+                AvailableSpace::Definite(width) => width,
+                AvailableSpace::MinContent => 1,
+                AvailableSpace::MaxContent => 5,
+            });
+            Size::new(width.min(5), 5_u16.div_ceil(width.max(1)))
+        }
+
+        #[test]
+        fn column_cell_max_width_remeasures_wrapping() -> Result<(), LayoutError> {
+            let mut contents = Vec::new();
+            for direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+                let mut tree = LayoutTree::new();
+                let leaf = tree.add(LayoutStyle {
+                    width: Dimension::cells(8),
+                    max_width: Dimension::cells(4),
+                    padding: Insets::symmetric(0, 1),
+                    ..LayoutStyle::default()
+                });
+                let root = tree.add_with_children(
+                    LayoutStyle {
+                        direction,
+                        align: Align::Start,
+                        ..LayoutStyle::default()
+                    },
+                    &[leaf],
+                )?;
+
+                tree.compute(root, Size::new(9, 4), |_, input| wrap_five_chars(input))?;
+                contents.push(tree.layout(leaf)?.content);
+            }
+
+            assert_eq!(contents, [Rect::new(1, 0, 2, 3), Rect::new(1, 1, 2, 3)]);
+            Ok(())
+        }
+
+        #[test]
+        fn column_width_constraint_matrix() -> Result<(), LayoutError> {
+            use Dimension::{Auto, Cells, Percent};
+
+            let mut failures = Vec::new();
+            for direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+                for (width, min_width, max_width, content_width, content_height) in [
+                    (Cells(8), Auto, Cells(4), 2, 3),
+                    // Fractional widths still measure conservatively, before edge rounding.
+                    (Cells(8), Auto, Percent(50), 3, 3),
+                    (Cells(3), Cells(6), Auto, 4, 2),
+                    (Cells(3), Percent(75), Auto, 5, 2),
+                    (Cells(8), Cells(6), Cells(4), 4, 2),
+                    (Cells(8), Percent(67), Percent(50), 4, 2),
+                    (Percent(100), Auto, Cells(4), 2, 3),
+                    (Percent(25), Percent(67), Cells(4), 4, 2),
+                    (Auto, Auto, Cells(4), 2, 3),
+                    (Auto, Auto, Percent(50), 2, 3),
+                    (Auto, Cells(8), Auto, 6, 1),
+                    (Auto, Cells(6), Cells(4), 4, 2),
+                    (Auto, Auto, Auto, 5, 1),
+                    (Cells(8), Auto, Auto, 6, 1),
+                ] {
+                    for (padding, border) in [
+                        (Insets::all(1), Insets::all(0)),
+                        (Insets::all(0), Insets::all(1)),
+                        (Insets::new(1, 0, 0, 1), Insets::new(0, 1, 1, 0)),
+                    ] {
+                        let mut tree = LayoutTree::new();
+                        let leaf = tree.add(LayoutStyle {
+                            width,
+                            min_width,
+                            max_width,
+                            padding,
+                            border,
+                            ..LayoutStyle::default()
+                        });
+                        let root = tree.add_with_children(
+                            LayoutStyle {
+                                direction,
+                                align: Align::Start,
+                                ..LayoutStyle::default()
+                            },
+                            &[leaf],
+                        )?;
+                        tree.compute(root, Size::new(9, 10), |_, input| wrap_five_chars(input))?;
+
+                        let layout = tree.layout(leaf)?;
+                        let y = if direction == FlexDirection::Column {
+                            1
+                        } else {
+                            9 - content_height
+                        };
+                        let expected = Rect::new(1, i32::from(y), content_width, content_height);
+                        if layout.content != expected {
+                            failures.push(format!(
+                                "{direction:?} width={width:?} min={min_width:?} max={max_width:?} padding={padding:?} border={border:?}: {:?}, expected {expected:?}",
+                                layout.content
+                            ));
+                        }
+                        assert_eq!(layout.padding, padding);
+                        assert_eq!(layout.border, border);
+                    }
+                }
+            }
+            assert!(failures.is_empty(), "{}", failures.join("\n"));
+            Ok(())
+        }
+
+        #[test]
+        fn column_constraints_preserve_main_axis_flex_basis() -> Result<(), LayoutError> {
+            for direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+                for (min_height, max_height, sibling_height, viewport_height, expected) in [
+                    (Dimension::cells(5), Dimension::Auto, 1, 10, [6, 4]),
+                    (Dimension::cells(0), Dimension::cells(2), 6, 6, [2, 4]),
+                ] {
+                    let mut tree = LayoutTree::new();
+                    let leaf = tree.add(LayoutStyle {
+                        width: Dimension::cells(8),
+                        max_width: Dimension::cells(4),
+                        min_height,
+                        max_height,
+                        padding: Insets::symmetric(0, 1),
+                        flex_grow: 1,
+                        ..LayoutStyle::default()
+                    });
+                    let sibling = tree.add(LayoutStyle {
+                        width: Dimension::cells(5),
+                        height: Dimension::cells(sibling_height),
+                        min_height: Dimension::cells(0),
+                        flex_grow: 1,
+                        ..LayoutStyle::default()
+                    });
+                    let root = tree.add_with_children(
+                        LayoutStyle {
+                            direction,
+                            align: Align::Start,
+                            ..LayoutStyle::default()
+                        },
+                        &[leaf, sibling],
+                    )?;
+                    tree.compute(root, Size::new(9, viewport_height), |_, input| {
+                        wrap_five_chars(input)
+                    })?;
+
+                    assert_eq!(
+                        [
+                            tree.layout(leaf)?.bounds.height,
+                            tree.layout(sibling)?.bounds.height
+                        ],
+                        expected,
+                        "{direction:?} min={min_height:?} max={max_height:?}"
+                    );
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn column_percent_constraints_use_parent_content_width() -> Result<(), LayoutError> {
+            for direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+                for is_container in [false, true] {
+                    let mut tree = LayoutTree::new();
+                    let style = LayoutStyle {
+                        width: Dimension::cells(8),
+                        max_width: Dimension::percent(50),
+                        padding: Insets::symmetric(0, 1),
+                        ..LayoutStyle::default()
+                    };
+                    let (constrained, measured) = if is_container {
+                        let leaf = tree.add(LayoutStyle::default());
+                        (tree.add_with_children(style, &[leaf])?, leaf)
+                    } else {
+                        let leaf = tree.add(style);
+                        (leaf, leaf)
+                    };
+                    let spacer =
+                        tree.add(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)));
+                    let parent = tree.add_with_children(
+                        LayoutStyle {
+                            width: Dimension::percent(50),
+                            direction,
+                            align: Align::Start,
+                            padding: Insets::symmetric(0, 1),
+                            ..LayoutStyle::default()
+                        },
+                        &[constrained, spacer],
+                    )?;
+                    let root = tree.add_with_children(
+                        LayoutStyle {
+                            align: Align::Start,
+                            padding: Insets::all(1),
+                            ..LayoutStyle::default()
+                        },
+                        &[parent],
+                    )?;
+                    tree.compute(root, Size::new(22, 10), |node, input| {
+                        if node == measured {
+                            wrap_five_chars(input)
+                        } else {
+                            Size::ZERO
+                        }
+                    })?;
+
+                    let y = if direction == FlexDirection::Column {
+                        1
+                    } else {
+                        2
+                    };
+                    assert_eq!(tree.layout(parent)?.bounds, Rect::new(1, 1, 10, 4));
+                    assert_eq!(tree.layout(constrained)?.content, Rect::new(3, y, 2, 3));
+                    assert_eq!(tree.layout(measured)?.content, Rect::new(3, y, 2, 3));
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn column_constraints_preserve_fixed_height() -> Result<(), LayoutError> {
+            for direction in [FlexDirection::Column, FlexDirection::ColumnReverse] {
+                for align in [Align::Start, Align::Stretch] {
+                    for width in [Dimension::cells(8), Dimension::Auto] {
+                        let mut tree = LayoutTree::new();
+                        let leaf = tree.add(LayoutStyle {
+                            width,
+                            height: Dimension::cells(1),
+                            max_width: Dimension::cells(4),
+                            padding: Insets::symmetric(0, 1),
+                            ..LayoutStyle::default()
+                        });
+                        let root = tree.add_with_children(
+                            LayoutStyle {
+                                direction,
+                                align,
+                                ..LayoutStyle::default()
+                            },
+                            &[leaf],
+                        )?;
+                        tree.compute(root, Size::new(9, 4), |_, input| wrap_five_chars(input))?;
+
+                        assert_eq!(tree.layout(leaf)?.content.size(), Size::new(2, 1));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn column_constraints_reuse_and_invalidate_measurement_cache() -> Result<(), LayoutError> {
+            let mut tree = LayoutTree::new();
+            let mut style = LayoutStyle {
+                width: Dimension::cells(8),
+                max_width: Dimension::percent(50),
+                padding: Insets::symmetric(0, 1),
+                ..LayoutStyle::default()
+            };
+            let leaf = tree.add(style);
+            let root = tree.add_with_children(
+                LayoutStyle {
+                    direction: FlexDirection::Column,
+                    align: Align::Start,
+                    ..LayoutStyle::default()
+                },
+                &[leaf],
+            )?;
+
+            for (viewport_width, expected) in [
+                (8, Size::new(2, 3)),
+                (12, Size::new(4, 2)),
+                (8, Size::new(2, 3)),
+            ] {
+                let mut measurements = 0;
+                tree.compute(root, Size::new(viewport_width, 10), |_, input| {
+                    measurements += 1;
+                    wrap_five_chars(input)
+                })?;
+                assert!(measurements > 0);
+                assert_eq!(tree.layout(leaf)?.content.size(), expected);
+
+                let mut staged = tree.clone_for_staging();
+                staged.compute(root, Size::new(viewport_width, 10), |_, _| {
+                    panic!("unchanged layout must be cached")
+                })?;
+                assert_eq!(staged.layout(leaf)?, tree.layout(leaf)?);
+            }
+
+            style.min_width = Dimension::cells(8);
+            tree.set_style(leaf, style)?;
+            tree.compute(root, Size::new(8, 10), |_, input| wrap_five_chars(input))?;
+            assert_eq!(tree.layout(leaf)?.content.size(), Size::new(6, 1));
+
+            tree.invalidate(leaf)?;
+            tree.compute(root, Size::new(8, 10), |_, input| {
+                let mut size = wrap_five_chars(input);
+                size.height += 1;
+                size
+            })?;
+            assert_eq!(tree.layout(leaf)?.content.size(), Size::new(6, 2));
+            Ok(())
+        }
+    }
+
     mod fractional_measurement {
         use super::*;
         use crate::AvailableSpace;

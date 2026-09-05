@@ -14,19 +14,19 @@ use crate::{
     LayoutNodeId, LayoutStyle, MeasureInput, Position, tree::NodeStore,
 };
 
+mod adapter;
+
 #[derive(Clone, Debug)]
 pub(crate) struct Engine {
-    tree: TaffyTree<LayoutNodeId>,
+    tree: TaffyTree<adapter::NodeLayout>,
     backend_ids: Vec<Option<(LayoutNodeId, taffy::NodeId)>>,
     effective_root: Option<(LayoutNodeId, LayoutStyle)>,
 }
 
 impl Engine {
     pub(crate) fn new() -> Self {
-        let mut tree = TaffyTree::new();
-        tree.enable_rounding();
         Self {
-            tree,
+            tree: TaffyTree::new(),
             backend_ids: Vec::new(),
             effective_root: None,
         }
@@ -51,7 +51,7 @@ impl Engine {
         }
         let backend = self
             .tree
-            .new_leaf_with_context(taffy_style(style), node)
+            .new_leaf_with_context(taffy_style(style), adapter::NodeLayout::new(node))
             .expect("adding a Taffy node to an in-memory tree cannot fail");
         self.backend_ids[node.index()] = Some((node, backend));
     }
@@ -137,54 +137,56 @@ impl Engine {
     {
         self.prepare_root(nodes, root, viewport)?;
         let backend_root = self.backend(root)?;
-        self.tree
-            .compute_layout_with_measure(
-                backend_root,
+        let mut view = adapter::LayoutView {
+            tree: &mut self.tree,
+            measure: |known: TaffySize<Option<f32>>,
+                      available: TaffySize<TaffyAvailableSpace>,
+                      node| {
+                let style = nodes
+                    .get(node)
+                    .expect("measured nodes must be retained")
+                    .style;
+                // Final geometry saturates the border box before applying insets.
+                // Keep the full inset sum so oversized padding cannot leave phantom content.
+                let horizontal_insets = u32::from(style.border.left)
+                    + u32::from(style.padding.left)
+                    + u32::from(style.border.right)
+                    + u32::from(style.padding.right);
+                let max_content_width =
+                    u32::from(u16::MAX).saturating_sub(horizontal_insets) as u16;
+                let available_width = available
+                    .width
+                    .map_definite_value(|width| width.min(f32::from(max_content_width)));
+                let measured = measure(
+                    node,
+                    MeasureInput {
+                        // A known Taffy width is border-box; its available width
+                        // is content-box for this pass. Floor only the measurement
+                        // constraint so wrapping does not assume a fractional cell.
+                        known_width: known
+                            .width
+                            .and(available_width.into_option())
+                            .map(floor_u16),
+                        known_height: known.height.map(round_u16),
+                        available_width: available_space(available_width),
+                        available_height: available_space(available.height),
+                    },
+                );
                 TaffySize {
-                    width: TaffyAvailableSpace::Definite(f32::from(viewport.width)),
-                    height: TaffyAvailableSpace::Definite(f32::from(viewport.height)),
-                },
-                |known, available, _, context, _| {
-                    let Some(node) = context.copied() else {
-                        return TaffySize::ZERO;
-                    };
-                    let style = nodes
-                        .get(node)
-                        .expect("measured nodes must be retained")
-                        .style;
-                    // Final geometry saturates the border box before applying insets.
-                    // Keep the full inset sum so oversized padding cannot leave phantom content.
-                    let horizontal_insets = u32::from(style.border.left)
-                        + u32::from(style.padding.left)
-                        + u32::from(style.border.right)
-                        + u32::from(style.padding.right);
-                    let max_content_width =
-                        u32::from(u16::MAX).saturating_sub(horizontal_insets) as u16;
-                    let available_width = available
-                        .width
-                        .map_definite_value(|width| width.min(f32::from(max_content_width)));
-                    let measured = measure(
-                        node,
-                        MeasureInput {
-                            // A known Taffy width is border-box; its available width
-                            // is content-box for this pass. Floor only the measurement
-                            // constraint so wrapping does not assume a fractional cell.
-                            known_width: known
-                                .width
-                                .and(available_width.into_option())
-                                .map(floor_u16),
-                            known_height: known.height.map(round_u16),
-                            available_width: available_space(available_width),
-                            available_height: available_space(available.height),
-                        },
-                    );
-                    TaffySize {
-                        width: f32::from(measured.width),
-                        height: f32::from(measured.height),
-                    }
-                },
-            )
-            .map_err(engine_error)?;
+                    width: f32::from(measured.width),
+                    height: f32::from(measured.height),
+                }
+            },
+        };
+        taffy::compute_root_layout(
+            &mut view,
+            backend_root,
+            TaffySize {
+                width: TaffyAvailableSpace::Definite(f32::from(viewport.width)),
+                height: TaffyAvailableSpace::Definite(f32::from(viewport.height)),
+            },
+        );
+        taffy::round_layout(&mut view, backend_root);
 
         layouts.fill(None);
         self.collect_layouts(nodes, root, (0.0, 0.0), layouts)
@@ -226,8 +228,12 @@ impl Engine {
         output: &mut [Option<ComputedLayout>],
     ) -> Result<(), LayoutError> {
         let backend = self.backend(node)?;
-        let layout = self.tree.layout(backend).map_err(engine_error)?;
-        let unrounded_layout = self.tree.unrounded_layout(backend);
+        let context = self
+            .tree
+            .get_node_context(backend)
+            .expect("layout nodes must have context");
+        let layout = &context.rounded;
+        let unrounded_layout = &context.unrounded;
         // Taffy's rounded sizes are cumulative edge differences; accumulate its
         // parent-relative source locations before producing root coordinates.
         let unrounded_origin = (
@@ -391,5 +397,90 @@ mod tests {
             available_space(TaffyAvailableSpace::Definite(4.9)),
             AvailableSpace::Definite(4)
         );
+    }
+
+    #[test]
+    fn adapter_display_none_clears_subtree_and_restores_layout() -> Result<(), taffy::TaffyError> {
+        let mut identities = crate::LayoutTree::new();
+        let mut tree = TaffyTree::new();
+        let [leaf, parent, root] = [(3, 2), (8, 3), (9, 10)].map(|(width, height)| {
+            tree.new_leaf_with_context(
+                taffy_style(LayoutStyle {
+                    width: Dimension::cells(width),
+                    height: Dimension::cells(height),
+                    align: Align::Start,
+                    ..LayoutStyle::default()
+                }),
+                adapter::NodeLayout::new(identities.add(LayoutStyle::default())),
+            )
+            .expect("adding a test node cannot fail")
+        });
+        tree.set_children(parent, &[leaf])?;
+        tree.set_children(root, &[parent])?;
+        let mut native = tree.clone();
+        let available = TaffySize {
+            width: TaffyAvailableSpace::Definite(9.0),
+            height: TaffyAvailableSpace::Definite(10.0),
+        };
+
+        for hidden_node in [parent, root, leaf] {
+            for hidden in [false, true, false, true, false] {
+                let mut style = tree.style(hidden_node)?.clone();
+                style.display = if hidden {
+                    taffy::Display::None
+                } else {
+                    taffy::Display::Flex
+                };
+                tree.set_style(hidden_node, style.clone())?;
+                native.set_style(hidden_node, style)?;
+
+                for repeat in [false, true] {
+                    let mut view = adapter::LayoutView {
+                        tree: &mut tree,
+                        measure: |_, _, _| {
+                            assert!(
+                                !hidden && !repeat,
+                                "hidden or cached layout must not measure"
+                            );
+                            TaffySize {
+                                width: 3.0,
+                                height: 2.0,
+                            }
+                        },
+                    };
+                    taffy::compute_root_layout(&mut view, root, available);
+                    taffy::round_layout(&mut view, root);
+                    native.compute_layout_with_measure(root, available, |_, _, _, _, _| {
+                        TaffySize {
+                            width: 3.0,
+                            height: 2.0,
+                        }
+                    })?;
+
+                    assert_eq!(
+                        tree.get_node_context(leaf)
+                            .expect("test context")
+                            .rounded
+                            .size,
+                        if hidden {
+                            TaffySize::ZERO
+                        } else {
+                            TaffySize {
+                                width: 3.0,
+                                height: 2.0,
+                            }
+                        },
+                        "hidden={hidden}, node={hidden_node:?}, repeat={repeat}"
+                    );
+                    for node in [leaf, parent, root] {
+                        let context = tree.get_node_context(node).expect("test context");
+                        assert_eq!(context.unrounded, *native.unrounded_layout(node));
+                        assert_eq!(context.rounded, *native.layout(node)?);
+                        assert_eq!(tree.dirty(node)?, native.dirty(node)?);
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 }
