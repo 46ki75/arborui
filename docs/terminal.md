@@ -228,6 +228,12 @@ No-op frames emit no bytes, including no synchronized-update envelope.
 
 ## ANSI Serialization
 
+The Crossterm backend accepts zero-based coordinates `0..=65534` on both axes;
+`65535` would overflow Crossterm's one-based cursor serialization. Visible
+cursors are checked before lifecycle changes or patch output, including parser
+recovery. Hidden cursor positions and unused cursor positions in no-op patches
+are not interpreted. Cell runs and image destinations must also fit the frame.
+
 The Crossterm or future native ANSI backend serializes cell runs while tracking
 logical output state:
 

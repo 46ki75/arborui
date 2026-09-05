@@ -33,10 +33,11 @@ pub(crate) fn write_patch_with_images<W: Write>(
     patch
         .validate_for_width_policy(capabilities.width_policy)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let has_image_output = images.is_some_and(PreparedUpdate::has_output);
+    validate_patch_cursor(patch, has_image_output)?;
     if let Some(images) = images {
         kitty::write_recovery(writer, images)?;
     }
-    let has_image_output = images.is_some_and(PreparedUpdate::has_output);
     if patch.runs.is_empty() && !patch.cursor_changed && !has_image_output {
         return Ok(());
     }
@@ -100,16 +101,29 @@ fn write_patch_body<W: Write>(
     Ok(())
 }
 
+pub(crate) fn validate_patch_cursor(patch: &FramePatch, has_image_output: bool) -> io::Result<()> {
+    if !patch.runs.is_empty() || patch.cursor_changed || has_image_output {
+        validate_cursor(patch.cursor)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn validate_cursor(cursor: CursorState) -> io::Result<()> {
+    if cursor.visibility == CursorVisibility::Visible {
+        coordinate(cursor.position.x, 0)?;
+        coordinate(cursor.position.y, 0)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn apply_cursor<W: Write>(writer: &mut W, cursor: CursorState) -> io::Result<()> {
     match cursor.visibility {
         CursorVisibility::Hidden => {
             writer.queue(Hide)?;
         }
         CursorVisibility::Visible => {
-            let x = u16::try_from(cursor.position.x)
-                .map_err(|_| invalid_coordinate(cursor.position.x))?;
-            let y = u16::try_from(cursor.position.y)
-                .map_err(|_| invalid_coordinate(cursor.position.y))?;
+            let x = coordinate(cursor.position.x, 0)?;
+            let y = coordinate(cursor.position.y, 0)?;
             writer.queue(MoveTo(x, y))?;
             writer.queue(Show)?;
             writer.queue(cursor_style(cursor))?;
@@ -309,18 +323,22 @@ const fn cursor_style(cursor: CursorState) -> SetCursorStyle {
     }
 }
 
-fn coordinate(base: i32, offset: usize) -> io::Result<u16> {
+pub(crate) fn coordinate(base: i32, offset: usize) -> io::Result<u16> {
     let offset = i32::try_from(offset).map_err(|_| invalid_coordinate(i32::MAX))?;
     let coordinate = base
         .checked_add(offset)
         .ok_or_else(|| invalid_coordinate(base))?;
-    u16::try_from(coordinate).map_err(|_| invalid_coordinate(coordinate))
+    // Crossterm 0.29 adds one in u16 arithmetic when serializing MoveTo.
+    u16::try_from(coordinate)
+        .ok()
+        .filter(|&value| value < u16::MAX)
+        .ok_or_else(|| invalid_coordinate(coordinate))
 }
 
 fn invalid_coordinate(value: i32) -> io::Error {
     io::Error::new(
         io::ErrorKind::InvalidInput,
-        format!("terminal coordinate {value} is outside the u16 range"),
+        format!("terminal coordinate {value} is outside the zero-based range 0..=65534"),
     )
 }
 

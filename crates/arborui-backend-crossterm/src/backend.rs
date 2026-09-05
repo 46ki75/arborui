@@ -300,6 +300,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
     }
 
     fn apply_state(&mut self, desired: &TerminalState) -> Result<(), Self::Error> {
+        output::validate_cursor(desired.cursor)?;
         self.recover_lifecycle_stream()?;
         let desired = self.effective_state(desired);
         let leaving_alternate = desired.screen == ScreenMode::Main
@@ -446,7 +447,6 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
         patch
             .validate_for_width_policy(self.capabilities.width_policy)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
-        self.recover_lifecycle_stream()?;
         let empty_scene = arborui_render::ImageScene::new();
         let image_scene = (self.capabilities.kitty_graphics
             && self.active.screen == ScreenMode::Alternate)
@@ -465,6 +465,15 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
         let image_update = image_scene
             .map(|scene| self.kitty.prepare_with_viewport(scene, image_viewport))
             .transpose()?;
+        // Preparation distinguishes actual image output from fallback-only scenes.
+        // Reject an emitted cursor before even parser recovery writes any bytes.
+        output::validate_patch_cursor(
+            patch,
+            image_update
+                .as_ref()
+                .is_some_and(kitty::PreparedUpdate::has_output),
+        )?;
+        self.recover_lifecycle_stream()?;
         let output_result = output::write_patch_with_images(
             &mut self.writer,
             patch,
@@ -1445,4 +1454,6 @@ mod tests {
 
         assert!(backend.effective_state(&TerminalState::default()).raw_mode);
     }
+
+    mod coordinate;
 }

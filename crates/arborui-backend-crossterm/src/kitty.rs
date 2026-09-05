@@ -11,6 +11,8 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use crossterm::{QueueableCommand, cursor::MoveTo, terminal::EndSynchronizedUpdate};
 use flate2::{Compression, write::ZlibEncoder};
 
+use crate::output::coordinate;
+
 const MAX_IMAGE_DIMENSION: u32 = 10_000;
 const MAX_ENCODED_CACHE_BYTES: usize = 64 * 1024 * 1024;
 const MAX_ENCODED_CACHE_ENTRIES: usize = 256;
@@ -384,8 +386,8 @@ fn write_image<W: Write>(
     let encoded = &prepared.encoded;
     let destination = placement.destination();
     let source = scaled_source(placement.source(), image, encoded.size);
-    let x = u16::try_from(destination.x).map_err(|_| invalid_coordinate(destination.x))?;
-    let y = u16::try_from(destination.y).map_err(|_| invalid_coordinate(destination.y))?;
+    let x = coordinate(destination.x, 0)?;
+    let y = coordinate(destination.y, 0)?;
     writer.queue(MoveTo(x, y))?;
     // Only identified xterm.js sessions need the single-command workaround.
     // Other terminals enforce Kitty's 4096-byte base64 payload limit.
@@ -551,8 +553,8 @@ fn write_placement<W: Write>(writer: &mut W, prepared: &PreparedPlacement<'_>) -
     let placement = prepared.placement;
     let destination = placement.destination();
     let source = scaled_source(placement.source(), placement.image(), prepared.encoded.size);
-    let x = u16::try_from(destination.x).map_err(|_| invalid_coordinate(destination.x))?;
-    let y = u16::try_from(destination.y).map_err(|_| invalid_coordinate(destination.y))?;
+    let x = coordinate(destination.x, 0)?;
+    let y = coordinate(destination.y, 0)?;
     writer.queue(MoveTo(x, y))?;
     write!(
         writer,
@@ -642,13 +644,6 @@ fn scaled_source(source: PixelRect, image: &RgbaImage, size: TransferSize) -> Pi
         y as u32,
         (scaled_right - x) as u32,
         (scaled_bottom - y) as u32,
-    )
-}
-
-fn invalid_coordinate(value: i32) -> io::Error {
-    io::Error::new(
-        io::ErrorKind::InvalidInput,
-        format!("terminal coordinate {value} is outside the supported range"),
     )
 }
 
