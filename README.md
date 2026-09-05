@@ -55,7 +55,12 @@ let image = arborui::image_decoder::load("photo.webp")?;
 ```
 
 It supports BMP, GIF, ICO, JPEG, PNG, PNM, QOI, TGA, TIFF, and WebP. Animated
-inputs decode their first frame.
+inputs decode their first frame. Color handling is intentionally limited: linear
+PNG, linear QOI, and standard Netpbm samples are converted to sRGB;
+ordinary sRGB samples and alpha are preserved. ICC profiles and other unsupported
+color declarations are rejected rather than silently relabeled. Untagged inputs
+other than Netpbm assume sRGB. See the `arborui::image_decoder` module documentation
+for the per-format metadata policy and error categories.
 
 Application code can import common model-update-view and widget APIs from the
 prelude:

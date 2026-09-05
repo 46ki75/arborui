@@ -4,6 +4,48 @@
 //! formats from their contents, applies supported orientation and color-space
 //! metadata, and returns validated 8-bit sRGB RGBA pixels as
 //! [`arborui_render::RgbaImage`]. Animated inputs decode their first frame.
+//!
+//! # Color Metadata
+//!
+//! This is a limited color adapter, not a general-purpose color-management
+//! system. Untagged RGB/grayscale inputs are assumed to use sRGB primaries and
+//! transfer, except Netpbm inputs, which use their specified BT.709 transfer.
+//! Color conversion leaves straight alpha unchanged (apart from reducing
+//! higher bit depths to 8 bits). Supported linear and BT.709 transfers operate
+//! independently on original 8/16-bit samples before rounding to 8 bits, using
+//! at most 64 KiB of lookup storage in addition to the bounded output image.
+//!
+//! - PNG: supports `sRGB`, `gAMA=1.0` (linear), absent or sRGB `cHRM` primaries,
+//!   and full-range identity-matrix `cICP` with sRGB primaries and either sRGB
+//!   or linear transfer. `cICP`
+//!   overrides `sRGB`, which overrides `gAMA`/`cHRM`. Other gamma, primaries,
+//!   or CICP values, all `iCCP` profiles, and HDR mastering metadata are rejected.
+//!   In particular, `gAMA=0.45455` alone is gamma 2.2, not an sRGB declaration,
+//!   and is outside this adapter's supported transfers.
+//! - QOI: honors both the sRGB and linear header flags.
+//! - BMP: accepts untagged headers and explicit sRGB/Windows sRGB; calibrated
+//!   colors and embedded or linked profiles are rejected. Linked profiles are
+//!   never opened.
+//! - ICO: applies the PNG/BMP policy to the entry selected by the pixel decoder.
+//! - JPEG and WebP: rejects ICC profiles reported by the decoder.
+//! - TIFF: rejects ICC and explicit transfer-function, transfer-range,
+//!   reference-black/white (`ReferenceBlackWhite`, tag 532), white-point, or
+//!   primary-chromaticity tags in the first image directory.
+//! - GIF: rejects the ICC application extension before the first image.
+//! - TGA: rejects files with an extension area, whose gamma/color-correction
+//!   metadata is unsupported. Legacy files and extension-free files assume sRGB.
+//! - PNM/PAM: uses full-range BT.709 for visual samples. Nonstandard linear or
+//!   sRGB variants cannot be distinguished and must be converted before loading.
+//!
+//! EXIF orientation is applied where exposed by the codec. Descriptive EXIF/XMP
+//! color labels and private extensions are not used as color profiles. For
+//! sources outside this policy, convert to an sRGB PNG without an ICC profile
+//! before loading. Recognized but unsupported declarations return
+//! [`DecodeErrorKind::Unsupported`], not silently relabeled pixels. Malformed
+//! headers return [`DecodeErrorKind::InvalidData`]; resource-limit failures
+//! return [`DecodeErrorKind::LimitExceeded`]. Rejected profiles are not validated.
+
+mod color;
 
 use std::{
     error::Error,
@@ -15,9 +57,8 @@ use std::{
 
 use arborui_render::{ImageError as RgbaImageError, MAX_IMAGE_BYTES, RgbaImage};
 use image::{
-    ColorType, ConvertColorOptions, DynamicImage, ImageDecoder, ImageError as DecoderError,
-    ImageFormat, ImageReader, Limits,
-    metadata::{Cicp, Orientation},
+    DynamicImage, ImageDecoder, ImageError as DecoderError, ImageFormat, ImageReader, Limits,
+    metadata::Orientation,
 };
 
 const MAX_DECODED_BYTES: u64 = MAX_IMAGE_BYTES as u64;
@@ -53,7 +94,12 @@ impl DecodeError {
 
     fn decoder(context: &'static str, error: DecoderError) -> Self {
         let kind = match &error {
-            DecoderError::IoError(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+            DecoderError::IoError(error)
+                if matches!(
+                    error.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData
+                ) =>
+            {
                 DecodeErrorKind::InvalidData
             }
             DecoderError::IoError(_) => DecodeErrorKind::Io,
@@ -130,6 +176,9 @@ impl Error for DecodeError {
 }
 
 /// Loads and decodes one image file, detecting its format from its contents.
+///
+/// Uses the crate's [color metadata policy](self#color-metadata). Unsupported
+/// profiles return [`DecodeErrorKind::Unsupported`].
 pub fn load(path: impl AsRef<Path>) -> Result<RgbaImage, DecodeError> {
     let file = File::open(path.as_ref()).map_err(|error| {
         DecodeError::with_source(DecodeErrorKind::Io, "failed to open image", error)
@@ -138,6 +187,9 @@ pub fn load(path: impl AsRef<Path>) -> Result<RgbaImage, DecodeError> {
 }
 
 /// Decodes encoded image bytes, detecting their raster format from their contents.
+///
+/// Uses the crate's [color metadata policy](self#color-metadata). Unsupported
+/// profiles return [`DecodeErrorKind::Unsupported`].
 pub fn decode(bytes: &[u8]) -> Result<RgbaImage, DecodeError> {
     decode_reader(Cursor::new(bytes))
 }
@@ -161,6 +213,14 @@ where
     if reader.format().is_none() && is_tga {
         reader.set_format(ImageFormat::Tga);
     }
+    let format = reader.format();
+    let mut source = reader.into_inner();
+    let source_transfer = color::inspect(&mut source, format)
+        .map_err(|error| DecodeError::decoder("failed to inspect image color metadata", error))?;
+    let mut reader = ImageReader::new(source);
+    if let Some(format) = format {
+        reader.set_format(format);
+    }
     let mut limits = Limits::default();
     limits.max_image_width = Some(MAX_IMAGE_AXIS);
     limits.max_image_height = Some(MAX_IMAGE_AXIS);
@@ -169,12 +229,22 @@ where
 
     let (mut decoded, orientation) = if reader.format() == Some(ImageFormat::WebP) {
         // image 0.25.8 does not forward max_alloc to WebP. Configure the codec
-        // directly so every EXIF range is bounded before metadata allocation.
+        // directly so every ICC/EXIF range is bounded before metadata allocation.
         let mut decoder = image_webp::WebPDecoder::new(reader.into_inner())
             .map_err(|error| DecodeError::webp("failed to initialize WebP decoder", error))?;
         decoder.set_memory_limit(MAX_IMAGE_BYTES);
         let (width, height) = decoder.dimensions();
         validate_output_size(width, height)?;
+        if decoder
+            .icc_profile()
+            .map_err(|error| DecodeError::webp("failed to read WebP color profile", error))?
+            .is_some()
+        {
+            return Err(DecodeError::decoder(
+                "unsupported image color metadata",
+                color::unsupported("WebP ICC profiles"),
+            ));
+        }
         let orientation = decoder
             .exif_metadata()
             .map_err(|error| DecodeError::webp("failed to read WebP orientation", error))?
@@ -210,6 +280,16 @@ where
                 ),
             ));
         }
+        if decoder
+            .icc_profile()
+            .map_err(|error| DecodeError::decoder("failed to read image color profile", error))?
+            .is_some()
+        {
+            return Err(DecodeError::decoder(
+                "unsupported image color metadata",
+                color::unsupported("ICC profiles"),
+            ));
+        }
         let orientation = decoder
             .orientation()
             .map_err(|error| DecodeError::decoder("failed to read image orientation", error))?;
@@ -218,10 +298,9 @@ where
         (decoded, orientation)
     };
     decoded.apply_orientation(orientation);
-    decoded
-        .convert_color_space(Cicp::SRGB, ConvertColorOptions::default(), ColorType::Rgba8)
+    // from_decoder defaults to sRGB without interpreting the source metadata.
+    let rgba = color::into_rgba8(decoded, source_transfer)
         .map_err(|error| DecodeError::decoder("failed to convert image to sRGB RGBA", error))?;
-    let rgba = decoded.into_rgba8();
     let (width, height) = rgba.dimensions();
     RgbaImage::new(width, height, rgba.into_raw()).map_err(DecodeError::rgba)
 }
@@ -355,6 +434,638 @@ mod tests {
     }
 
     #[test]
+    fn linear_png_is_converted_to_srgb() -> Result<(), Box<dyn Error>> {
+        let mut encoded = Vec::new();
+        image::ImageEncoder::write_image(
+            image::codecs::png::PngEncoder::new(&mut encoded),
+            &[128, 128, 128],
+            1,
+            1,
+            image::ExtendedColorType::Rgb8,
+        )?;
+        insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+
+        let decoded = decode(&encoded)?;
+
+        assert_eq!(decoded.pixels(), [188, 188, 188, 255]);
+        Ok(())
+    }
+
+    #[test]
+    fn linear_png_distinct_black_white_pixels() -> Result<(), Box<dyn Error>> {
+        let samples = [
+            0, 0, 0, 40, 255, 255, 255, 128, 0, 0, 0, 40, 255, 255, 255, 128,
+        ];
+        for color in [
+            image::ExtendedColorType::Rgba8,
+            image::ExtendedColorType::Rgba16,
+        ] {
+            let bytes = samples
+                .iter()
+                .flat_map(|sample| {
+                    if color == image::ExtendedColorType::Rgba16 {
+                        (u16::from(*sample) * 257).to_ne_bytes().to_vec()
+                    } else {
+                        vec![*sample]
+                    }
+                })
+                .collect::<Vec<_>>();
+            let mut encoded = Vec::new();
+            image::ImageEncoder::write_image(
+                image::codecs::png::PngEncoder::new(&mut encoded),
+                &bytes,
+                4,
+                1,
+                color,
+            )?;
+            insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+
+            assert_eq!(decode(&encoded)?.pixels(), samples);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn tiff_reference_black_white_must_not_be_ignored() -> Result<(), Box<dyn Error>> {
+        let mut encoded = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(image::RgbImage::from_pixel(1, 1, image::Rgb([128; 3])))
+            .write_to(&mut encoded, ImageFormat::Tiff)?;
+        let mut encoded = encoded.into_inner();
+        assert_eq!(&encoded[..2], b"II");
+        let offset = usize::try_from(u32::from_le_bytes(encoded[4..8].try_into()?))?;
+        let count = u16::from_le_bytes(encoded[offset..offset + 2].try_into()?);
+        let directory = encoded[offset + 2..offset + 2 + usize::from(count) * 12].to_vec();
+        let offset = u32::try_from(encoded.len())?;
+        encoded[4..8].copy_from_slice(&offset.to_le_bytes());
+        encoded.extend_from_slice(&(count + 1).to_le_bytes());
+        encoded.extend_from_slice(&directory);
+        encoded.extend_from_slice(&532_u16.to_le_bytes()); // ReferenceBlackWhite
+        encoded.extend_from_slice(&5_u16.to_le_bytes()); // RATIONAL
+        encoded.extend_from_slice(&6_u32.to_le_bytes());
+        let values_offset = u32::try_from(encoded.len() + 8)?;
+        encoded.extend_from_slice(&values_offset.to_le_bytes());
+        encoded.extend_from_slice(&0_u32.to_le_bytes()); // End of image directories.
+        for value in [128_u32, 255, 128, 255, 128, 255] {
+            encoded.extend_from_slice(&value.to_le_bytes());
+            encoded.extend_from_slice(&1_u32.to_le_bytes());
+        }
+        assert_eq!(
+            image::load_from_memory(&encoded)?.into_rgb8().as_raw(),
+            &[128; 3]
+        );
+
+        let error = decode(&encoded).expect_err("unsupported reference range must be rejected");
+        assert_eq!(error.kind(), DecodeErrorKind::Unsupported);
+        Ok(())
+    }
+
+    fn insert_png_chunk(encoded: &mut Vec<u8>, kind: [u8; 4], data: &[u8]) {
+        // Color chunks precede IDAT, immediately after the fixed-size IHDR.
+        encoded.splice(33..33, png_chunk(kind, data));
+    }
+
+    fn png_chunk(kind: [u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = u32::try_from(data.len())
+            .expect("test chunk length fits u32")
+            .to_be_bytes()
+            .to_vec();
+        chunk.extend_from_slice(&kind);
+        chunk.extend_from_slice(data);
+        let mut crc = u32::MAX;
+        for byte in &chunk[4..] {
+            crc ^= u32::from(*byte);
+            for _ in 0..8 {
+                crc = (crc >> 1) ^ (0xedb8_8320 & 0_u32.wrapping_sub(crc & 1));
+            }
+        }
+        chunk.extend_from_slice(&(!crc).to_be_bytes());
+        chunk
+    }
+
+    #[test]
+    fn integer_transfers_preserve_distinct_channels_and_alpha() -> Result<(), Box<dyn Error>> {
+        use image::ExtendedColorType::*;
+
+        for (color, channels, tuple, maximum) in [
+            (L8, 1, "GRAYSCALE", 255_u32),
+            (La8, 2, "GRAYSCALE_ALPHA", 255),
+            (Rgb8, 3, "RGB", 255),
+            (Rgba8, 4, "RGB_ALPHA", 255),
+            (L16, 1, "GRAYSCALE", 65_535),
+            (La16, 2, "GRAYSCALE_ALPHA", 65_535),
+            (Rgb16, 3, "RGB", 65_535),
+            (Rgba16, 4, "RGB_ALPHA", 65_535),
+        ] {
+            // Every channel and alpha traverse their full input range, with
+            // different adjacent pixels and different RGB values per pixel.
+            let samples = (0..=maximum)
+                .flat_map(|i| {
+                    (0..channels)
+                        .map(move |channel| ((i + 11_051 * channel) % (maximum + 1)) as u16)
+                })
+                .collect::<Vec<_>>();
+            for transfer in ["srgb", "linear", "bt709"] {
+                let mut bytes = Vec::new();
+                for sample in &samples {
+                    if maximum == 255 {
+                        bytes.push(*sample as u8);
+                    } else if transfer == "bt709" {
+                        bytes.extend_from_slice(&sample.to_be_bytes());
+                    } else {
+                        bytes.extend_from_slice(&sample.to_ne_bytes());
+                    }
+                }
+                for width in [1, 4, 7, maximum + 1] {
+                    let byte_length =
+                        usize::try_from(width * channels)? * if maximum == 255 { 1 } else { 2 };
+                    let bytes = &bytes[..byte_length];
+                    let mut encoded = Vec::new();
+                    if transfer == "bt709" {
+                        encoded.extend_from_slice(format!("P7\nWIDTH {width}\nHEIGHT 1\nDEPTH {channels}\nMAXVAL {maximum}\nTUPLTYPE {tuple}\nENDHDR\n").as_bytes());
+                        encoded.extend_from_slice(bytes);
+                    } else {
+                        image::ImageEncoder::write_image(
+                            image::codecs::png::PngEncoder::new(&mut encoded),
+                            bytes,
+                            width,
+                            1,
+                            color,
+                        )?;
+                        if transfer == "linear" {
+                            insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+                        }
+                    }
+                    let decoded = decode(&encoded)?;
+                    assert_eq!(decoded.pixels().len(), usize::try_from(width)? * 4);
+                    let channels = usize::try_from(channels)?;
+                    for (index, (sample, pixel)) in samples
+                        .chunks_exact(channels)
+                        .zip(decoded.pixels().chunks_exact(4))
+                        .enumerate()
+                    {
+                        for channel in 0..3 {
+                            let value = f64::from(sample[if channels <= 2 { 0 } else { channel }])
+                                / f64::from(maximum);
+                            let expected = match transfer {
+                                "linear" => srgb_sample(value),
+                                "bt709" => srgb_sample(if value < 0.081 {
+                                    value / 4.5
+                                } else {
+                                    ((value + 0.099) / 1.099).powf(1.0 / 0.45)
+                                }),
+                                _ => (value * 255.0).round() as u8,
+                            };
+                            assert!(
+                                pixel[channel].abs_diff(expected) <= u8::from(transfer != "srgb"),
+                                "{color:?} {transfer} pixel {index} channel {channel}: {pixel:?}, expected {expected}"
+                            );
+                        }
+                        let alpha = if channels == 2 || channels == 4 {
+                            (f64::from(sample[channels - 1]) * 255.0 / f64::from(maximum)).round()
+                                as u8
+                        } else {
+                            255
+                        };
+                        assert_eq!(
+                            pixel[3], alpha,
+                            "{color:?} {transfer} alpha at pixel {index}"
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn linear_palette_png_preserves_distinct_colors_and_transparency() -> Result<(), Box<dyn Error>>
+    {
+        let mut encoded = b"\x89PNG\r\n\x1a\n".to_vec();
+        encoded.extend(png_chunk(
+            *b"IHDR",
+            &[0, 0, 0, 4, 0, 0, 0, 1, 2, 3, 0, 0, 0],
+        ));
+        encoded.extend(png_chunk(*b"gAMA", &100_000_u32.to_be_bytes()));
+        encoded.extend(png_chunk(
+            *b"PLTE",
+            &[0, 20, 40, 60, 80, 100, 120, 140, 160, 180, 200, 255],
+        ));
+        encoded.extend(png_chunk(*b"tRNS", &[0, 40, 128, 255]));
+        // zlib stored block containing filter byte 0 and four 2-bit indices.
+        encoded.extend(png_chunk(
+            *b"IDAT",
+            &[0x78, 1, 1, 2, 0, 0xfd, 0xff, 0, 0x1b, 0, 0x1d, 0, 0x1c],
+        ));
+        encoded.extend(png_chunk(*b"IEND", &[]));
+        let decoded = decode(&encoded)?;
+        for (pixel, sample) in decoded.pixels().chunks_exact(4).zip([
+            [0, 20, 40, 0],
+            [60, 80, 100, 40],
+            [120, 140, 160, 128],
+            [180, 200, 255, 255],
+        ]) {
+            for channel in 0..3 {
+                assert!(
+                    pixel[channel].abs_diff(srgb_sample(f64::from(sample[channel]) / 255.0)) <= 1,
+                    "{pixel:?} from {sample:?}"
+                );
+            }
+            assert_eq!(pixel[3], sample[3]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn srgb_float_tiff_only_casts_depth_and_layout() -> Result<(), Box<dyn Error>> {
+        let samples = [
+            0.0_f32, 0.25, 0.5, 0.0, 1.0, 0.75, 0.2, 0.5, 0.125, 0.5, 1.0, 1.0, -1.0, 2.0, 0.0,
+            0.25,
+        ];
+        for alpha in [false, true] {
+            let source =
+                image::ImageBuffer::from_raw(4, 1, samples.to_vec()).expect("four RGBA pixels");
+            let source = DynamicImage::ImageRgba32F(source);
+            let source = if alpha {
+                source
+            } else {
+                DynamicImage::ImageRgb32F(source.into_rgb32f())
+            };
+            let mut encoded = Cursor::new(Vec::new());
+            source.write_to(&mut encoded, ImageFormat::Tiff)?;
+            let decoded = decode(encoded.get_ref())?;
+            for (pixel, sample) in decoded
+                .pixels()
+                .chunks_exact(4)
+                .zip(samples.chunks_exact(4))
+            {
+                for channel in 0..4 {
+                    let expected = if channel == 3 && !alpha {
+                        255
+                    } else {
+                        (sample[channel].clamp(0.0, 1.0) * 255.0).round() as u8
+                    };
+                    assert_eq!(pixel[channel], expected);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn source_color_metadata_preserves_alpha_and_srgb_controls() -> Result<(), Box<dyn Error>> {
+        for alpha in [0, 40, 128, 255] {
+            let mut encoded = Vec::new();
+            image::ImageEncoder::write_image(
+                image::codecs::png::PngEncoder::new(&mut encoded),
+                &[128, 128, 128, alpha],
+                1,
+                1,
+                image::ExtendedColorType::Rgba8,
+            )?;
+            assert_eq!(decode(&encoded)?.pixels(), [128, 128, 128, alpha]);
+            insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+            assert_eq!(decode(&encoded)?.pixels(), [188, 188, 188, alpha]);
+            // PNG sRGB takes precedence over the lower-priority gAMA chunk.
+            insert_png_chunk(&mut encoded, *b"sRGB", &[0]);
+            assert_eq!(decode(&encoded)?.pixels(), [128, 128, 128, alpha]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_unsupported_png_color_metadata() -> Result<(), Box<dyn Error>> {
+        for (kind, data) in [
+            (*b"gAMA", 50_000_u32.to_be_bytes().to_vec()),
+            (*b"gAMA", 45_455_u32.to_be_bytes().to_vec()),
+            (*b"cHRM", vec![0; 32]),
+            (*b"cICP", vec![9, 16, 0, 1]),
+            (*b"cICP", vec![1, 13, 0, 0]),
+            (*b"cICP", vec![1, 13, 1, 1]),
+            (*b"iCCP", vec![0; 4]),
+            (*b"mDCV", vec![0; 24]),
+            (*b"cLLI", vec![0; 8]),
+        ] {
+            let mut encoded = encode(ImageFormat::Png)?;
+            insert_png_chunk(&mut encoded, kind, &data);
+            let error = decode(&encoded).expect_err("unsupported color metadata must fail");
+            assert_eq!(
+                error.kind(),
+                DecodeErrorKind::Unsupported,
+                "{kind:?}: {error}"
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_embedded_jpeg_and_webp_profiles() -> Result<(), Box<dyn Error>> {
+        use image::{ExtendedColorType, ImageEncoder};
+
+        let mut jpeg = Vec::new();
+        let mut encoder = image::codecs::jpeg::JpegEncoder::new(&mut jpeg);
+        encoder.set_icc_profile(vec![1; 128])?;
+        encoder.write_image(&[128; 3], 1, 1, ExtendedColorType::Rgb8)?;
+        let mut webp = Vec::new();
+        let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut webp);
+        encoder.set_icc_profile(vec![1; 128])?;
+        encoder.write_image(&[128; 3], 1, 1, ExtendedColorType::Rgb8)?;
+        for encoded in [jpeg, webp] {
+            let error = decode(&encoded).expect_err("ICC profiles must not be silently ignored");
+            assert_eq!(error.kind(), DecodeErrorKind::Unsupported);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn malformed_color_headers_return_invalid_data() -> Result<(), Box<dyn Error>> {
+        for (kind, data) in [
+            (*b"gAMA", vec![0; 4]),
+            (*b"sRGB", vec![4]),
+            (*b"gAMA", vec![1]),
+        ] {
+            let mut encoded = encode(ImageFormat::Png)?;
+            insert_png_chunk(&mut encoded, kind, &data);
+            assert_eq!(
+                decode(&encoded)
+                    .expect_err("malformed PNG color chunk must fail")
+                    .kind(),
+                DecodeErrorKind::InvalidData
+            );
+        }
+        let mut encoded = encode(ImageFormat::Png)?;
+        insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+        insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+        assert_eq!(
+            decode(&encoded)
+                .expect_err("duplicate PNG color chunk must fail")
+                .kind(),
+            DecodeErrorKind::InvalidData
+        );
+        let mut encoded = encode(ImageFormat::Png)?;
+        insert_png_chunk(&mut encoded, *b"gAMA", &100_000_u32.to_be_bytes());
+        encoded[45] ^= 1;
+        assert_eq!(
+            decode(&encoded)
+                .expect_err("color CRC must be checked before using the declaration")
+                .kind(),
+            DecodeErrorKind::InvalidData
+        );
+        let mut encoded = encode(ImageFormat::Qoi)?;
+        encoded[13] = 2;
+        assert_eq!(
+            decode(&encoded)
+                .expect_err("invalid QOI color flag must fail")
+                .kind(),
+            DecodeErrorKind::InvalidData
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn tiff_profiles_are_rejected_before_reading_values_in_either_byte_order() {
+        for little in [false, true] {
+            let mut encoded = if little {
+                b"II*\0\x08\0\0\0\x01\0".to_vec()
+            } else {
+                b"MM\0*\0\0\0\x08\0\x01".to_vec()
+            };
+            encoded.extend_from_slice(&if little {
+                34675_u16.to_le_bytes()
+            } else {
+                34675_u16.to_be_bytes()
+            });
+            // Even the entry value/count/offset is absent. Reject the tag before
+            // the codec can allocate from a value or swallow an ICC read error.
+            let error =
+                decode(&encoded).expect_err("TIFF ICC tag must fail before reading its value");
+            assert_eq!(error.kind(), DecodeErrorKind::Unsupported);
+            assert!(
+                error
+                    .to_string()
+                    .contains("TIFF colorimetry or ICC profiles")
+            );
+        }
+    }
+
+    #[test]
+    fn linear_qoi_is_converted_without_changing_alpha() -> Result<(), Box<dyn Error>> {
+        let mut encoded = encode(ImageFormat::Qoi)?;
+        let srgb = decode(&encoded)?;
+        assert_eq!(srgb.pixels(), [10, 20, 30, 40, 200, 180, 160, 255]);
+        encoded[13] = 1;
+        let linear = decode(&encoded)?;
+        for (actual, expected) in linear
+            .pixels()
+            .chunks_exact(4)
+            .zip([[56_u8, 79, 96, 40], [229, 219, 208, 255]])
+        {
+            for channel in 0..3 {
+                assert!(actual[channel].abs_diff(expected[channel]) <= 1);
+            }
+            assert_eq!(actual[3], expected[3]);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn converts_supported_png_transfers_across_sample_depths() -> Result<(), Box<dyn Error>> {
+        for depth in [
+            image::ExtendedColorType::La8,
+            image::ExtendedColorType::La16,
+        ] {
+            let samples = [0_u16, 128, 32_768, 65_535];
+            for (kind, metadata, is_linear) in [
+                (*b"gAMA", 100_000_u32.to_be_bytes(), true),
+                (*b"cICP", [1, 8, 0, 1], true),
+                (*b"cICP", [1, 13, 0, 1], false),
+            ] {
+                let pixels = samples
+                    .iter()
+                    .flat_map(|sample| {
+                        if depth == image::ExtendedColorType::La16 {
+                            [sample.to_ne_bytes(), 10_280_u16.to_ne_bytes()].concat()
+                        } else {
+                            vec![(sample / 257) as u8, 40]
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                let mut encoded = Vec::new();
+                image::ImageEncoder::write_image(
+                    image::codecs::png::PngEncoder::new(&mut encoded),
+                    &pixels,
+                    4,
+                    1,
+                    depth,
+                )?;
+                insert_png_chunk(&mut encoded, kind, &metadata);
+                let decoded = decode(&encoded)?;
+                for (pixel, sample) in decoded.pixels().chunks_exact(4).zip(samples) {
+                    let value = if depth == image::ExtendedColorType::La16 {
+                        f64::from(sample) / 65_535.0
+                    } else {
+                        f64::from(sample / 257) / 255.0
+                    };
+                    let expected = if is_linear {
+                        srgb_sample(value)
+                    } else {
+                        (value * 255.0).round() as u8
+                    };
+                    assert!(
+                        pixel[..3]
+                            .iter()
+                            .all(|channel| channel.abs_diff(expected) <= 1),
+                        "{depth:?} {kind:?}: {pixel:?}, expected {expected}"
+                    );
+                    assert_eq!(pixel[3], 40);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn srgb_sample(linear: f64) -> u8 {
+        let value = if linear <= 0.003_130_8 {
+            12.92 * linear
+        } else {
+            1.055 * linear.powf(1.0 / 2.4) - 0.055
+        };
+        (value * 255.0).round() as u8
+    }
+
+    #[test]
+    fn png_metadata_precedence_and_srgb_chromaticities() -> Result<(), Box<dyn Error>> {
+        let mut encoded = encode(ImageFormat::Png)?;
+        let chromaticities = [
+            31_270_u32, 32_900, 64_000, 33_000, 30_000, 60_000, 15_000, 6_000,
+        ]
+        .into_iter()
+        .flat_map(u32::to_be_bytes)
+        .collect::<Vec<_>>();
+        insert_png_chunk(&mut encoded, *b"cHRM", &chromaticities);
+        assert_eq!(
+            decode(&encoded)?.pixels(),
+            decode(&encode(ImageFormat::Png)?)?.pixels()
+        );
+
+        let mut encoded = encode(ImageFormat::Png)?;
+        insert_png_chunk(&mut encoded, *b"gAMA", &50_000_u32.to_be_bytes());
+        insert_png_chunk(&mut encoded, *b"cHRM", &[0; 32]);
+        insert_png_chunk(&mut encoded, *b"sRGB", &[0]);
+        assert_eq!(
+            decode(&encoded)?.pixels(),
+            decode(&encode(ImageFormat::Png)?)?.pixels()
+        );
+        insert_png_chunk(&mut encoded, *b"cICP", &[1, 8, 0, 1]);
+        let decoded = decode(&encoded)?;
+        assert!(decoded.pixels()[0].abs_diff(srgb_sample(10.0 / 255.0)) <= 1);
+        insert_png_chunk(&mut encoded, *b"iCCP", &[0; 4]);
+        assert_eq!(
+            decode(&encoded).expect_err("ICC is always rejected").kind(),
+            DecodeErrorKind::Unsupported
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn ico_color_metadata_matches_the_selected_entry() -> Result<(), Box<dyn Error>> {
+        use image::codecs::ico::{IcoEncoder, IcoFrame};
+
+        let srgb = encode(ImageFormat::Png)?;
+        let mut linear = srgb.clone();
+        insert_png_chunk(&mut linear, *b"gAMA", &100_000_u32.to_be_bytes());
+        for (images, expected) in [
+            ([srgb.clone(), linear.clone(), srgb.clone()], srgb.clone()),
+            ([srgb.clone(), srgb.clone(), linear.clone()], linear.clone()),
+        ] {
+            let frames = images
+                .into_iter()
+                .map(|image| IcoFrame::with_encoded(image, 2, 1, image::ExtendedColorType::Rgba8))
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut encoded = Vec::new();
+            IcoEncoder::new(&mut encoded).encode_images(&frames)?;
+            assert_eq!(decode(&encoded)?.pixels(), decode(&expected)?.pixels());
+        }
+        insert_png_chunk(&mut linear, *b"iCCP", &[0; 4]);
+        let mut encoded = Vec::new();
+        IcoEncoder::new(&mut encoded).encode_images(&[IcoFrame::with_encoded(
+            linear,
+            2,
+            1,
+            image::ExtendedColorType::Rgba8,
+        )?])?;
+        assert_eq!(
+            decode(&encoded)
+                .expect_err("embedded PNG profile must fail")
+                .kind(),
+            DecodeErrorKind::Unsupported
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn rejects_color_declarations_hidden_by_other_codecs() -> Result<(), Box<dyn Error>> {
+        let mut bmp = encode(ImageFormat::Bmp)?;
+        assert_eq!(&bmp[70..74], &0x7352_4742_u32.to_le_bytes());
+        for color in [0_u32, 0x4d42_4544, 0x4c49_4e4b] {
+            bmp[70..74].copy_from_slice(&color.to_le_bytes());
+            assert_eq!(
+                decode(&bmp).expect_err("BMP color space must fail").kind(),
+                DecodeErrorKind::Unsupported
+            );
+        }
+        let mut tga = encode(ImageFormat::Tga)?;
+        tga.extend_from_slice(&1_u32.to_le_bytes());
+        tga.extend_from_slice(&0_u32.to_le_bytes());
+        tga.extend_from_slice(b"TRUEVISION-XFILE.\0");
+        assert_eq!(
+            decode(&tga).expect_err("TGA extension must fail").kind(),
+            DecodeErrorKind::Unsupported
+        );
+
+        let mut gif = encode(ImageFormat::Gif)?;
+        let offset = 13
+            + if gif[10] & 0x80 == 0 {
+                0
+            } else {
+                3 * (2_usize << (gif[10] & 7))
+            };
+        gif.splice(
+            offset..offset,
+            b"\x21\xff\x0bICCRGBG1012\x01\0\0".iter().copied(),
+        );
+        assert_eq!(
+            decode(&gif).expect_err("GIF ICC must fail").kind(),
+            DecodeErrorKind::Unsupported
+        );
+
+        for tag in [301_u16, 318, 319, 342, 532, 34675] {
+            let mut tiff = encode(ImageFormat::Tiff)?;
+            assert_eq!(&tiff[..2], b"II");
+            let directory = usize::try_from(u32::from_le_bytes(tiff[4..8].try_into()?))?;
+            // Replace the first tag identity, without ever reading its value.
+            tiff[directory + 2..directory + 4].copy_from_slice(&tag.to_le_bytes());
+            assert_eq!(
+                decode(&tiff).expect_err("TIFF color tag must fail").kind(),
+                DecodeErrorKind::Unsupported
+            );
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn netpbm_uses_bt709_not_srgb() -> Result<(), Box<dyn Error>> {
+        let decoded = decode(b"P6\n1 1\n255\n\x80\x80\x80")?;
+        let expected = srgb_sample(((128.0 / 255.0 + 0.099) / 1.099_f64).powf(1.0 / 0.45));
+        assert!(
+            decoded.pixels()[..3]
+                .iter()
+                .all(|channel| channel.abs_diff(expected) <= 1)
+        );
+        assert_eq!(decoded.pixels()[3], 255);
+        Ok(())
+    }
+
+    #[test]
     fn preserves_png_rgba_values() -> Result<(), Box<dyn Error>> {
         let decoded = decode(&encode(ImageFormat::Png)?)?;
 
@@ -475,7 +1186,7 @@ mod tests {
     #[test]
     fn oversized_webp_exif_is_rejected_before_metadata_allocation() {
         for nested in [false, true] {
-            let bytes = oversized_webp_exif(nested);
+            let bytes = oversized_webp_metadata(nested, *b"EXIF");
             let mut source = MetadataReadGuard::new(&bytes);
 
             let error = decode_reader(&mut source).expect_err("oversized EXIF must fail");
@@ -492,7 +1203,7 @@ mod tests {
     fn webp_exif_guard_stops_the_unlimited_decoder_before_allocation() -> Result<(), Box<dyn Error>>
     {
         for nested in [false, true] {
-            let bytes = oversized_webp_exif(nested);
+            let bytes = oversized_webp_metadata(nested, *b"EXIF");
             let mut source = MetadataReadGuard::new(&bytes);
             let mut decoder = image::codecs::webp::WebPDecoder::new(&mut source)?;
 
@@ -506,21 +1217,82 @@ mod tests {
         Ok(())
     }
 
-    fn oversized_webp_exif(nested: bool) -> Vec<u8> {
+    #[test]
+    fn oversized_webp_icc_is_rejected_before_metadata_allocation() {
+        for nested in [false, true] {
+            let bytes = oversized_webp_metadata(nested, *b"ICCP");
+            let mut source = MetadataReadGuard::new(&bytes);
+            let error = decode_reader(&mut source).expect_err("oversized ICC must fail");
+            assert!(
+                !source.metadata_read_reached,
+                "WebP ICC allocation was reached (nested={nested})"
+            );
+            assert_eq!(error.kind(), DecodeErrorKind::LimitExceeded);
+        }
+    }
+
+    #[test]
+    fn oversized_png_profile_is_rejected_before_reading_its_payload() -> Result<(), Box<dyn Error>>
+    {
+        use image::codecs::ico::{IcoEncoder, IcoFrame};
+
+        let mut png = encode(ImageFormat::Png)?;
+        png.truncate(33);
+        png.extend_from_slice(&u32::try_from(MAX_IMAGE_BYTES + 1)?.to_be_bytes());
+        png.extend_from_slice(b"iCCP");
+        let mut ico = Vec::new();
+        IcoEncoder::new(&mut ico).encode_images(&[IcoFrame::with_encoded(
+            png.clone(),
+            2,
+            1,
+            image::ExtendedColorType::Rgba8,
+        )?])?;
+        for encoded in [png, ico] {
+            // No profile payload is present: trying to read it would give EOF.
+            assert_eq!(
+                decode(&encoded)
+                    .expect_err("oversized profile must fail")
+                    .kind(),
+                DecodeErrorKind::LimitExceeded
+            );
+        }
+        Ok(())
+    }
+
+    fn oversized_webp_metadata(nested: bool, kind: [u8; 4]) -> Vec<u8> {
         let length = u32::try_from(MAX_IMAGE_BYTES + 1).expect("image limit fits u32");
         let mut bytes = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0".to_vec();
-        bytes.extend_from_slice(&[if nested { 2 } else { 8 }, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        bytes.extend_from_slice(&[
+            if nested {
+                2
+            } else if kind == *b"EXIF" {
+                8
+            } else {
+                32
+            },
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        ]);
         if nested {
             // The pinned decoder can mistake the first frame's VP8L payload for
-            // a second chunk header and import its EXIF range into image metadata.
+            // a second chunk header and import its range into image metadata.
             bytes.extend_from_slice(b"ANIM\x06\0\0\0\0\0\0\0\0\0ANMF\x28\0\0\0");
             bytes.extend_from_slice(&[0; 16]);
-            bytes.extend_from_slice(b"VP8L\x08\0\0\0EXIF");
+            bytes.extend_from_slice(b"VP8L\x08\0\0\0");
+            bytes.extend_from_slice(&kind);
             bytes.extend_from_slice(&length.to_le_bytes());
             bytes.extend_from_slice(b"JUNK\0\0\0\0");
             assert_eq!(bytes.len(), 92);
         } else {
-            bytes.extend_from_slice(b"VP8L\0\0\0\0EXIF");
+            bytes.extend_from_slice(b"VP8L\0\0\0\0");
+            bytes.extend_from_slice(&kind);
             bytes.extend_from_slice(&length.to_le_bytes());
             assert_eq!(bytes.len(), 46);
         }
