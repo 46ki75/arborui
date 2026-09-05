@@ -596,6 +596,60 @@ mod tests {
     }
 
     #[test]
+    fn justification_follows_main_axis_direction() -> Result<(), LayoutError> {
+        for (direction, start, end) in [
+            (FlexDirection::Row, 0, 8),
+            (FlexDirection::Column, 0, 8),
+            (FlexDirection::RowReverse, 8, 0),
+            (FlexDirection::ColumnReverse, 8, 0),
+        ] {
+            let is_row = matches!(direction, FlexDirection::Row | FlexDirection::RowReverse);
+            let (viewport, child_size) = if is_row {
+                (Size::new(10, 1), Size::new(2, 1))
+            } else {
+                (Size::new(1, 10), Size::new(1, 2))
+            };
+            for (justify, offset) in [
+                (Justify::Start, start),
+                (Justify::End, end),
+                (Justify::Center, 4),
+            ] {
+                let mut tree = LayoutTree::new();
+                let child = tree.add(LayoutStyle::new().size(
+                    Dimension::cells(child_size.width),
+                    Dimension::cells(child_size.height),
+                ));
+                let root = tree.add_with_children(
+                    LayoutStyle {
+                        direction,
+                        justify,
+                        ..LayoutStyle::new().size(
+                            Dimension::cells(viewport.width),
+                            Dimension::cells(viewport.height),
+                        )
+                    },
+                    &[child],
+                )?;
+
+                tree.compute(root, viewport, |_, _| Size::ZERO)?;
+
+                assert_eq!(tree.layout(root)?.bounds.size(), viewport);
+                assert_eq!(
+                    tree.layout(child)?.bounds,
+                    Rect::new(
+                        if is_row { offset } else { 0 },
+                        if is_row { 0 } else { offset },
+                        child_size.width,
+                        child_size.height,
+                    ),
+                    "{direction:?} {justify:?}"
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
     fn cumulative_rounding_covers_nested_fractional_percentage_parent() -> Result<(), LayoutError> {
         let mut tree = LayoutTree::new();
         let first = tree.add(LayoutStyle::new().size(Dimension::percent(33), Dimension::cells(1)));

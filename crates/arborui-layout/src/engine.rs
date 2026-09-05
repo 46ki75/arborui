@@ -278,9 +278,9 @@ fn taffy_style(style: LayoutStyle) -> TaffyStyle {
             Align::Stretch => AlignItems::STRETCH,
         }),
         justify_content: Some(match style.justify {
-            Justify::Start => JustifyContent::START,
+            Justify::Start => JustifyContent::FLEX_START,
             Justify::Center => JustifyContent::CENTER,
-            Justify::End => JustifyContent::END,
+            Justify::End => JustifyContent::FLEX_END,
             Justify::SpaceBetween => JustifyContent::SPACE_BETWEEN,
             Justify::SpaceAround => JustifyContent::SPACE_AROUND,
             Justify::SpaceEvenly => JustifyContent::SPACE_EVENLY,
