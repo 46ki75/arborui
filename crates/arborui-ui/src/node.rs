@@ -21,6 +21,7 @@ pub struct RetainedNode {
     pub(crate) focus_style: arborui_core::Style,
     pub(crate) content_fingerprint: u64,
     pub(crate) paint_fingerprint: u64,
+    pub(crate) has_painter: bool,
     pub(crate) invalidation: Invalidation,
     pub(crate) interactive: bool,
     pub(crate) focusable: bool,

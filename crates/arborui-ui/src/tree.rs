@@ -1056,7 +1056,9 @@ impl UiTree {
                 {
                     requested.request(Invalidation::Layout);
                 }
-                if retained.paint_fingerprint != element.paint_fingerprint() {
+                if retained.paint_fingerprint != element.paint_fingerprint()
+                    || retained.has_painter != element.has_painter()
+                {
                     requested.request(Invalidation::Paint);
                 }
                 retained.layout_style = element.layout_style();
@@ -1076,6 +1078,7 @@ impl UiTree {
                 retained.dynamic_child_offset = element.has_dynamic_child_offset();
                 retained.fill_background = element.fills_background();
                 retained.paint_fingerprint = element.paint_fingerprint();
+                retained.has_painter = element.has_painter();
                 retained.invalidation.request(requested);
             }
             self.pending.request(requested);
@@ -1180,6 +1183,7 @@ impl UiTree {
                 dynamic_child_offset: element.has_dynamic_child_offset(),
                 fill_background: element.fills_background(),
                 paint_fingerprint: element.paint_fingerprint(),
+                has_painter: element.has_painter(),
                 layout_node,
             },
         );
@@ -1898,6 +1902,93 @@ mod tests {
         assert_eq!(paint_calls.get(), 2);
         assert!(repaint.patch().full_repaint);
         Ok(())
+    }
+
+    fn check_painter_presence_transition(
+        fingerprint: u64,
+        initially_painted: bool,
+    ) -> Result<(), UiError> {
+        let size = Size::new(1, 1);
+        let mut tree = UiTree::new();
+        let mut incremental_tree = UiTree::new();
+        let mut reference_tree = UiTree::new();
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut incremental_renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut reference_renderer = Renderer::new(size, WidthPolicy::Unicode);
+
+        for (frame, painted) in [initially_painted, !initially_painted, initially_painted]
+            .into_iter()
+            .enumerate()
+        {
+            let view = Element::<()>::custom("painter", [])
+                .key(1_u64)
+                .layout(LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1)));
+            let view = if painted {
+                view.paint(fingerprint, |_, canvas| {
+                    canvas.draw_text(Point::ORIGIN, "X", Style::default(), None)?;
+                    Ok(())
+                })
+            } else {
+                view
+            };
+            let prepared = tree.prepare(&view, size, &mut renderer)?;
+            assert_eq!(
+                prepared
+                    .patch()
+                    .runs
+                    .first()
+                    .and_then(|run| run.cells.first())
+                    .and_then(|cell| match &cell.content {
+                        PatchCellContent::Grapheme { text, .. } => Some(text.as_ref()),
+                        PatchCellContent::Empty => Some(" "),
+                        PatchCellContent::Continuation { .. } => None,
+                    }),
+                Some(if painted { "X" } else { " " }),
+                "fingerprint={fingerprint}, painted={painted}"
+            );
+            assert_eq!(tree.commit(prepared, &mut renderer), Ok(()));
+
+            let mut reconciled = incremental_tree.clone();
+            compare_incremental_and_reference(
+                &mut incremental_tree,
+                &mut reference_tree,
+                &view,
+                size,
+                &mut incremental_renderer,
+                &mut reference_renderer,
+                Some(frame == 0),
+            )?;
+
+            // Reconcile separately so clearing the renderer association cannot mask reuse bugs.
+            if frame != 0 {
+                let report = reconciled.reconcile(&view)?;
+                assert_eq!(report.invalidation, Invalidation::Paint);
+                assert_eq!((report.reused, report.created, report.removed), (1, 0, 0));
+                let root = reconciled.root().expect("root exists");
+                assert_eq!(reconciled.nodes[&root].invalidation, Invalidation::Paint);
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn adding_zero_fingerprint_painter_presence_repaints() -> Result<(), UiError> {
+        check_painter_presence_transition(0, false)
+    }
+
+    #[test]
+    fn removing_zero_fingerprint_painter_presence_repaints() -> Result<(), UiError> {
+        check_painter_presence_transition(0, true)
+    }
+
+    #[test]
+    fn adding_nonzero_fingerprint_painter_presence_repaints() -> Result<(), UiError> {
+        check_painter_presence_transition(1, false)
+    }
+
+    #[test]
+    fn removing_nonzero_fingerprint_painter_presence_repaints() -> Result<(), UiError> {
+        check_painter_presence_transition(1, true)
     }
 
     #[test]
