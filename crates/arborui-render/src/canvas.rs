@@ -80,6 +80,7 @@ pub struct Canvas<'a> {
     hit: Option<HitId>,
     damage_rows: Option<RowMask<'a>>,
     images: Option<&'a mut ImageScene>,
+    image_replay_depth: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +107,7 @@ impl<'a> Canvas<'a> {
             hit: None,
             damage_rows: None,
             images: None,
+            image_replay_depth: 0,
         }
     }
 
@@ -173,6 +175,7 @@ impl<'a> Canvas<'a> {
             hit: self.hit,
             damage_rows: self.damage_rows,
             images: self.images.as_deref_mut(),
+            image_replay_depth: self.image_replay_depth,
         }
     }
 
@@ -189,9 +192,12 @@ impl<'a> Canvas<'a> {
                 *selected && i32::try_from(y).is_ok_and(|y| self.row_is_selected(y))
             })
             .collect::<Vec<_>>();
-        if let Some(images) = self.images.as_deref_mut() {
-            images.mark_damaged(&selected_rows, self.clip);
-        }
+        let image_replay_depth = self
+            .images
+            .as_deref_mut()
+            .map_or(self.image_replay_depth, |images| {
+                images.mark_damaged(&selected_rows, self.clip, self.image_replay_depth)
+            });
         Canvas {
             buffer: &mut *self.buffer,
             store: &mut *self.store,
@@ -205,6 +211,7 @@ impl<'a> Canvas<'a> {
                 parent: self.damage_rows.as_ref(),
             }),
             images: self.images.as_deref_mut(),
+            image_replay_depth,
         }
     }
 
@@ -232,7 +239,7 @@ impl<'a> Canvas<'a> {
         let Some(images) = self.images.as_deref_mut() else {
             return Err(DrawError::ImageSceneUnavailable);
         };
-        images.push(placement)?;
+        images.push(placement, self.image_replay_depth)?;
 
         for y in visible.y..visible.bottom() {
             if !self.row_is_selected(y) {

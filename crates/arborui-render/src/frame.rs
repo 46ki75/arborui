@@ -828,6 +828,8 @@ impl Renderer {
     ///
     /// Unpainted cells and hit targets retain their committed values. The caller
     /// must clear changed regions and replay every painter that can affect them.
+    /// Changed image draws require damage covering their complete old and new
+    /// destinations; unchanged images intersecting that damage must be replayed.
     pub fn prepare_from_current<F>(
         &mut self,
         cursor: CursorState,
@@ -2134,4 +2136,6 @@ mod tests {
         );
         Ok(())
     }
+
+    mod image_stacking;
 }
