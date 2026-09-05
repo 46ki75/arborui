@@ -1,8 +1,8 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
-use arborui_core::{Insets, Point, Style};
+use arborui_core::{Insets, Point, Rect, Style};
 use arborui_layout::LayoutStyle;
-use arborui_text::graphemes;
+use arborui_text::{graphemes, is_line_break};
 use arborui_ui::Element;
 
 /// Glyph set used to paint a block border.
@@ -78,6 +78,9 @@ impl<'a, Message> Block<'a, Message> {
     }
 
     /// Sets the optional title painted into the top border.
+    ///
+    /// Only the first logical line is used, stopping at any mandatory Unicode
+    /// line break. The title is clipped to the top row between the corners.
     #[must_use]
     pub const fn title(mut self, title: &'a str) -> Self {
         self.title = Some(title);
@@ -230,6 +233,7 @@ impl<'a, Message> Block<'a, Message> {
 
                 if let Some(title) = title {
                     let available = usize::from(size.width.saturating_sub(2));
+                    let title = title.split(is_line_break).next().unwrap_or_default();
                     let decorated = format!(" {title} ");
                     let mut fitted = String::new();
                     let mut width = 0_usize;
@@ -240,6 +244,11 @@ impl<'a, Message> Block<'a, Message> {
                         fitted.push_str(grapheme.text);
                         width = width.saturating_add(grapheme.width);
                     }
+                    // Clips use buffer coordinates; drawing remains local to the block.
+                    let origin = canvas.origin();
+                    let clip = Rect::new(1, 0, size.width.saturating_sub(2), 1)
+                        .translated(origin.x, origin.y);
+                    let mut canvas = canvas.scoped(clip, origin);
                     let _ = canvas.draw_text(Point::new(1, 0), &fitted, border_style, None)?;
                 }
                 Ok(())

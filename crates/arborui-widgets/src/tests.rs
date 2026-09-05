@@ -85,6 +85,8 @@ fn block_paints_border_title_and_inset_content() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+mod block_titles;
+
 #[test]
 fn stack_preserves_sizes_and_paints_later_children_last() -> Result<(), Box<dyn Error>> {
     let child_layout = LayoutStyle::new().size(Dimension::cells(1), Dimension::cells(1));
