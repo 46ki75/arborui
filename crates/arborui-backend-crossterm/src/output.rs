@@ -21,7 +21,7 @@ pub(crate) fn write_patch<W: Write>(
     patch: &FramePatch,
     capabilities: &Capabilities,
 ) -> io::Result<()> {
-    write_patch_with_images(writer, patch, capabilities, None)
+    write_patch_with_images(writer, patch, capabilities, None, &mut false)
 }
 
 pub(crate) fn write_patch_with_images<W: Write>(
@@ -29,6 +29,7 @@ pub(crate) fn write_patch_with_images<W: Write>(
     patch: &FramePatch,
     capabilities: &Capabilities,
     images: Option<&PreparedUpdate<'_>>,
+    synchronized_update_pending: &mut bool,
 ) -> io::Result<()> {
     patch
         .validate_for_width_policy(capabilities.width_policy)
@@ -46,11 +47,18 @@ pub(crate) fn write_patch_with_images<W: Write>(
         return writer.flush();
     }
 
+    // Even a partial Begin needs recovery. A failed body may leave an APC that
+    // swallows the best-effort End, so only a fully successful frame confirms it.
+    *synchronized_update_pending = true;
     writer.queue(BeginSynchronizedUpdate)?;
     let body_result = write_patch_body(writer, patch, capabilities.color, images);
     let end_result = writer.queue(EndSynchronizedUpdate).map(|_| ());
     let flush_result = writer.flush();
-    body_result.and(end_result).and(flush_result)
+    let result = body_result.and(end_result).and(flush_result);
+    if result.is_ok() {
+        *synchronized_update_pending = false;
+    }
+    result
 }
 
 fn write_patch_body<W: Write>(
