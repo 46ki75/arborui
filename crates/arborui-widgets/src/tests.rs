@@ -11,6 +11,8 @@ use arborui_ui::{
 
 use crate::{Block, Button, Checkbox, Dialog, Image, ScrollView, TextInput, stack};
 
+mod input_selection;
+
 fn prepare_and_commit<Message>(
     tree: &mut UiTree,
     view: &Element<'_, Message>,
