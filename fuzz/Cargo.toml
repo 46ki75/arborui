@@ -28,6 +28,6 @@ bench = false
 [[bin]]
 name = "render_transactions"
 path = "fuzz_targets/render_transactions.rs"
-test = false
+test = true
 doc = false
 bench = false
