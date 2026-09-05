@@ -820,6 +820,313 @@ mod tests {
         Ok(())
     }
 
+    mod fractional_measurement {
+        use super::*;
+        use crate::AvailableSpace;
+
+        fn wrap_five_chars(input: MeasureInput) -> Size {
+            let width = input.known_width.unwrap_or(match input.available_width {
+                AvailableSpace::Definite(width) => width,
+                AvailableSpace::MinContent => 1,
+                AvailableSpace::MaxContent => 5,
+            });
+            Size::new(width.min(5), 5_u16.div_ceil(width.max(1)))
+        }
+
+        #[test]
+        fn fractional_known_width_does_not_undermeasure_wrapping() -> Result<(), LayoutError> {
+            let mut tree = LayoutTree::new();
+            let leaf = tree.add(LayoutStyle {
+                width: Dimension::percent(50),
+                ..LayoutStyle::default()
+            });
+            let root = tree.add_with_children(
+                LayoutStyle {
+                    justify: Justify::End,
+                    align: Align::Start,
+                    ..LayoutStyle::default()
+                },
+                &[leaf],
+            )?;
+            let mut inputs = Vec::new();
+
+            tree.compute(root, Size::new(9, 4), |node, input| {
+                assert_eq!(node, leaf);
+                inputs.push(input);
+                wrap_five_chars(input)
+            })?;
+
+            assert_eq!(tree.layout(leaf)?.bounds, Rect::new(5, 0, 4, 2));
+            assert!(inputs.iter().any(|input| input.known_width == Some(4)));
+            assert!(inputs.iter().all(|input| input.known_width != Some(5)));
+            Ok(())
+        }
+
+        #[test]
+        fn integer_known_width_wraps_without_extra_rows() -> Result<(), LayoutError> {
+            for (width, height) in [(4, 2), (5, 1)] {
+                let mut tree = LayoutTree::new();
+                let leaf = tree.add(LayoutStyle {
+                    width: Dimension::cells(width),
+                    ..LayoutStyle::default()
+                });
+                let root = tree.add_with_children(
+                    LayoutStyle {
+                        justify: Justify::End,
+                        align: Align::Start,
+                        ..LayoutStyle::default()
+                    },
+                    &[leaf],
+                )?;
+
+                tree.compute(root, Size::new(9, 4), |_, input| wrap_five_chars(input))?;
+
+                assert_eq!(tree.layout(leaf)?.bounds.size(), Size::new(width, height));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn conservative_measurement_preserves_rounded_up_width() -> Result<(), LayoutError> {
+            let mut tree = LayoutTree::new();
+            let leaf = tree.add(LayoutStyle {
+                width: Dimension::percent(50),
+                ..LayoutStyle::default()
+            });
+            let root = tree.add_with_children(
+                LayoutStyle {
+                    align: Align::Start,
+                    ..LayoutStyle::default()
+                },
+                &[leaf],
+            )?;
+
+            tree.compute(root, Size::new(9, 4), |_, input| wrap_five_chars(input))?;
+
+            // Measurement may reserve an extra row, but must not floor final geometry.
+            assert_eq!(tree.layout(leaf)?.bounds, Rect::new(0, 0, 5, 2));
+            Ok(())
+        }
+
+        #[test]
+        fn known_width_excludes_padding_and_border() -> Result<(), LayoutError> {
+            for (padding, border) in [
+                (Insets::all(2), Insets::all(0)),
+                (Insets::all(0), Insets::all(2)),
+                (Insets::all(1), Insets::all(1)),
+            ] {
+                for width in [Dimension::cells(8), Dimension::percent(50)] {
+                    let mut tree = LayoutTree::new();
+                    let leaf = tree.add(LayoutStyle {
+                        width,
+                        padding,
+                        border,
+                        ..LayoutStyle::default()
+                    });
+                    let root = tree.add_with_children(
+                        LayoutStyle {
+                            justify: Justify::End,
+                            align: Align::Start,
+                            ..LayoutStyle::default()
+                        },
+                        &[leaf],
+                    )?;
+                    let mut known_widths = Vec::new();
+
+                    tree.compute(root, Size::new(17, 8), |_, input| {
+                        known_widths.extend(input.known_width);
+                        wrap_five_chars(input)
+                    })?;
+
+                    let layout = tree.layout(leaf)?;
+                    assert_eq!(layout.bounds, Rect::new(9, 0, 8, 6));
+                    assert_eq!(layout.content, Rect::new(11, 2, 4, 2));
+                    assert_eq!(layout.padding, padding);
+                    assert_eq!(layout.border, border);
+                    assert!(!known_widths.is_empty());
+                    assert!(known_widths.iter().all(|width| *width == 4));
+                }
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn saturated_border_width_bounds_wrapping_measurement() -> Result<(), LayoutError> {
+            for (padding, border, content_width, content_height) in [
+                (Insets::symmetric(0, 1), Insets::all(0), 65_533, 2),
+                (Insets::all(0), Insets::symmetric(0, 1), 65_533, 2),
+                (Insets::new(0, 0, 0, 40_000), Insets::all(0), 25_535, 3),
+                (
+                    Insets::new(0, 20_000, 0, 0),
+                    Insets::new(0, 0, 0, 20_000),
+                    25_535,
+                    3,
+                ),
+            ] {
+                let mut tree = LayoutTree::new();
+                let leaf = tree.add(LayoutStyle {
+                    width: Dimension::percent(200),
+                    flex_shrink: 0,
+                    padding,
+                    border,
+                    ..LayoutStyle::default()
+                });
+                let root = tree.add_with_children(
+                    LayoutStyle {
+                        align: Align::Start,
+                        ..LayoutStyle::default()
+                    },
+                    &[leaf],
+                )?;
+                let mut inputs = Vec::new();
+
+                tree.compute(root, Size::new(40_000, 4), |_, input| {
+                    inputs.push(input);
+                    let width = input.known_width.unwrap_or(match input.available_width {
+                        AvailableSpace::Definite(width) => width,
+                        AvailableSpace::MinContent => 1,
+                        AvailableSpace::MaxContent => 65_534,
+                    });
+                    Size::new(width.min(65_534), 65_534_u16.div_ceil(width.max(1)))
+                })?;
+
+                let layout = tree.layout(leaf)?;
+                assert_eq!(layout.bounds.width, u16::MAX);
+                assert_eq!(
+                    layout.content.size(),
+                    Size::new(content_width, content_height),
+                    "inputs={inputs:?}"
+                );
+                assert!(
+                    inputs
+                        .iter()
+                        .any(|input| input.known_width == Some(content_width))
+                );
+                assert!(inputs.iter().all(|input| {
+                    input
+                        .known_width
+                        .is_none_or(|width| width <= layout.content.width)
+                }));
+                assert!(inputs.iter().all(|input| match input.available_width {
+                    AvailableSpace::Definite(width) => width <= layout.content.width,
+                    _ => true,
+                }));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn saturated_border_width_with_oversized_insets_has_no_content() -> Result<(), LayoutError>
+        {
+            for (padding, border) in [
+                (Insets::symmetric(0, 40_000), Insets::all(0)),
+                (Insets::new(0, 0, 0, 40_000), Insets::new(0, 0, 0, 40_000)),
+                (
+                    Insets::symmetric(0, u16::MAX),
+                    Insets::symmetric(0, u16::MAX),
+                ),
+            ] {
+                let mut tree = LayoutTree::new();
+                let leaf = tree.add(LayoutStyle {
+                    width: Dimension::percent(300),
+                    flex_shrink: 0,
+                    padding,
+                    border,
+                    ..LayoutStyle::default()
+                });
+                let root = tree.add_with_children(
+                    LayoutStyle {
+                        align: Align::Start,
+                        ..LayoutStyle::default()
+                    },
+                    &[leaf],
+                )?;
+                let mut inputs = Vec::new();
+                tree.compute(root, Size::new(40_000, 4), |_, input| {
+                    inputs.push(input);
+                    Size::new(0, 1)
+                })?;
+
+                let layout = tree.layout(leaf)?;
+                assert_eq!(layout.bounds.width, u16::MAX);
+                assert_eq!(layout.content.width, 0);
+                assert!(inputs.iter().any(|input| input.known_width.is_some()));
+                assert!(
+                    inputs
+                        .iter()
+                        .all(|input| input.known_width.is_none_or(|width| width == 0)),
+                    "inputs={inputs:?}"
+                );
+                assert!(inputs.iter().all(|input| match input.available_width {
+                    AvailableSpace::Definite(width) => width == 0,
+                    _ => true,
+                }));
+            }
+            Ok(())
+        }
+
+        #[test]
+        fn nested_fractional_origins_keep_measurement_within_content() -> Result<(), LayoutError> {
+            for (justify, child_justify, x, width) in [
+                (Justify::Start, Justify::Start, 0, 7),
+                (Justify::Start, Justify::Center, 3, 7),
+                (Justify::Start, Justify::End, 7, 7),
+                (Justify::Center, Justify::Start, 2, 7),
+                (Justify::Center, Justify::Center, 6, 6),
+                (Justify::Center, Justify::End, 9, 7),
+                (Justify::End, Justify::Start, 5, 6),
+                (Justify::End, Justify::Center, 8, 7),
+                (Justify::End, Justify::End, 11, 7),
+            ] {
+                let mut tree = LayoutTree::new();
+                let padding = Insets::new(1, 0, 0, 1);
+                let border = Insets::new(0, 1, 1, 0);
+                let leaf = tree.add(LayoutStyle {
+                    width: Dimension::percent(50),
+                    padding,
+                    border,
+                    ..LayoutStyle::default()
+                });
+                let parent = tree.add_with_children(
+                    LayoutStyle {
+                        width: Dimension::percent(75),
+                        justify: child_justify,
+                        align: Align::Start,
+                        ..LayoutStyle::default()
+                    },
+                    &[leaf],
+                )?;
+                let root = tree.add_with_children(
+                    LayoutStyle {
+                        justify,
+                        align: Align::Start,
+                        ..LayoutStyle::default()
+                    },
+                    &[parent],
+                )?;
+                let mut known_widths = Vec::new();
+
+                tree.compute(root, Size::new(18, 8), |_, input| {
+                    known_widths.extend(input.known_width);
+                    wrap_five_chars(input)
+                })?;
+
+                let layout = tree.layout(leaf)?;
+                assert_eq!(layout.bounds, Rect::new(x, 0, width, 4));
+                assert_eq!(layout.content, Rect::new(x + 1, 1, width - 2, 2));
+                assert_eq!(layout.padding, padding);
+                assert_eq!(layout.border, border);
+                assert!(known_widths.contains(&4));
+                assert!(
+                    known_widths
+                        .iter()
+                        .all(|width| *width <= layout.content.width)
+                );
+            }
+            Ok(())
+        }
+    }
+
     #[test]
     fn recomputes_after_viewport_resize() -> Result<(), LayoutError> {
         let mut tree = LayoutTree::new();

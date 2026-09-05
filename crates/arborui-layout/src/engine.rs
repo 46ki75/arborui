@@ -148,12 +148,33 @@ impl Engine {
                     let Some(node) = context.copied() else {
                         return TaffySize::ZERO;
                     };
+                    let style = nodes
+                        .get(node)
+                        .expect("measured nodes must be retained")
+                        .style;
+                    // Final geometry saturates the border box before applying insets.
+                    // Keep the full inset sum so oversized padding cannot leave phantom content.
+                    let horizontal_insets = u32::from(style.border.left)
+                        + u32::from(style.padding.left)
+                        + u32::from(style.border.right)
+                        + u32::from(style.padding.right);
+                    let max_content_width =
+                        u32::from(u16::MAX).saturating_sub(horizontal_insets) as u16;
+                    let available_width = available
+                        .width
+                        .map_definite_value(|width| width.min(f32::from(max_content_width)));
                     let measured = measure(
                         node,
                         MeasureInput {
-                            known_width: known.width.map(round_u16),
+                            // A known Taffy width is border-box; its available width
+                            // is content-box for this pass. Floor only the measurement
+                            // constraint so wrapping does not assume a fractional cell.
+                            known_width: known
+                                .width
+                                .and(available_width.into_option())
+                                .map(floor_u16),
                             known_height: known.height.map(round_u16),
-                            available_width: available_space(available.width),
+                            available_width: available_space(available_width),
                             available_height: available_space(available.height),
                         },
                     );
