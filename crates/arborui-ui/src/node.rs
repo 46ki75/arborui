@@ -31,9 +31,11 @@ pub struct RetainedNode {
     pub(crate) cursor_intent: Option<arborui_core::CursorState>,
     pub(crate) cursor_fingerprint: u64,
     pub(crate) dynamic_cursor: bool,
+    pub(crate) cursor_child: Option<usize>,
     pub(crate) child_offset: Point,
     pub(crate) child_offset_fingerprint: u64,
     pub(crate) dynamic_child_offset: bool,
+    pub(crate) child_offset_child: Option<usize>,
     pub(crate) fill_background: bool,
     pub(crate) layout_node: LayoutNodeId,
 }

@@ -79,10 +79,6 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         }
         let buffer = self.buffer;
         let cursor_byte = buffer.cursor().get();
-        let cursor_base = Point::new(
-            i32::from(layout.border.left).saturating_add(i32::from(layout.padding.left)),
-            i32::from(layout.border.top).saturating_add(i32::from(layout.padding.top)),
-        );
         let on_change = self.on_change;
         let on_submit = self.on_submit;
         let cursor_slot = Element::<Message>::container([])
@@ -94,19 +90,24 @@ impl<'a, Message: 'a> TextInput<'a, Message> {
         .layout(layout)
         .style(self.style)
         .focusable(true)
-        .cursor_with(cursor_byte as u64, move |width_policy, size| {
+        .cursor_with_child(0, cursor_byte as u64, move |width_policy, _size| {
             let cursor_width = measure(&buffer.text()[..cursor_byte], width_policy).width;
-            let scroll = horizontal_scroll(cursor_width, size.width, layout);
-            CursorState::visible(
-                cursor_base.translated(saturating_i32(cursor_width.saturating_sub(scroll)), 0),
-            )
-            .with_shape(CursorShape::Bar)
+            CursorState::visible(Point::new(saturating_i32(cursor_width), 0))
+                .with_shape(CursorShape::Bar)
         })
-        .child_offset_with(cursor_byte as u64, move |size, width_policy| {
+        .child_offset_with_child(0, cursor_byte as u64, move |size, width_policy, text| {
             let cursor_width = measure(&buffer.text()[..cursor_byte], width_policy).width;
+            let cursor = text.origin().translated(saturating_i32(cursor_width), 0);
+            // Scroll only when the resolved caret leaves the content viewport.
             Point::new(
-                -saturating_i32(horizontal_scroll(cursor_width, size.width, layout)),
-                0,
+                cursor
+                    .x
+                    .clamp(0, i32::from(size.width.saturating_sub(1)))
+                    .saturating_sub(cursor.x),
+                cursor
+                    .y
+                    .clamp(0, i32::from(size.height.saturating_sub(1)))
+                    .saturating_sub(cursor.y),
             )
         })
         .on_event(EventPhase::Target, move |event, context| {
@@ -202,15 +203,4 @@ fn input_action(event: &UiEvent) -> Option<InputAction<'_>> {
 
 fn saturating_i32(value: usize) -> i32 {
     i32::try_from(value).unwrap_or(i32::MAX)
-}
-
-fn horizontal_scroll(cursor_width: usize, border_width: u16, layout: LayoutStyle) -> usize {
-    let horizontal_insets = layout
-        .border
-        .left
-        .saturating_add(layout.border.right)
-        .saturating_add(layout.padding.left)
-        .saturating_add(layout.padding.right);
-    let content_width = usize::from(border_width.saturating_sub(horizontal_insets));
-    cursor_width.saturating_add(1).saturating_sub(content_width)
 }

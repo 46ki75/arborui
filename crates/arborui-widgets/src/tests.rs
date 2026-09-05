@@ -506,3 +506,5 @@ fn controlled_scroll_translates_clips_and_emits_signed_deltas() -> Result<(), Bo
     assert_eq!(horizontal.messages, [Point::new(3, 0)]);
     Ok(())
 }
+
+mod input_cursor;
