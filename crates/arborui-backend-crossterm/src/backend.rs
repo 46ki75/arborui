@@ -41,6 +41,10 @@ pub struct CrosstermBackend<W: Write + Send> {
     writer: W,
     capabilities: Capabilities,
     active: TerminalState,
+    // Combined ANSI mouse commands can partially change modes before failing.
+    // Windows queue() flushes before native enable initializes the saved mode;
+    // premature ownership would make cleanup disable an uninitialized mode.
+    mouse_unconfirmed: bool,
     confirmed: TerminalState,
     keyboard_pushed: bool,
     original_raw_mode: bool,
@@ -64,6 +68,7 @@ impl<W: Write + Send> CrosstermBackend<W> {
             capabilities: detect_capabilities(),
             confirmed: active.clone(),
             active,
+            mouse_unconfirmed: false,
             keyboard_pushed: false,
             original_raw_mode,
             kitty: kitty::KittyState::new(kitty_single_command_from(
@@ -190,8 +195,11 @@ impl<W: Write + Send> CrosstermBackend<W> {
                 self.writer.queue(PopKeyboardEnhancementFlags)?;
                 self.keyboard_pushed = false;
             }
-            if self.active.mouse == MouseMode::Capture || self.confirmed.mouse == MouseMode::Capture
+            if self.mouse_unconfirmed
+                || self.active.mouse == MouseMode::Capture
+                || self.confirmed.mouse == MouseMode::Capture
             {
+                self.mouse_unconfirmed = cfg!(not(windows));
                 self.writer.queue(DisableMouseCapture)?;
             }
             if self.active.bracketed_paste || self.confirmed.bracketed_paste {
@@ -228,6 +236,7 @@ impl<W: Write + Send> CrosstermBackend<W> {
         })();
 
         if output_result.is_ok() {
+            self.mouse_unconfirmed = false;
             self.lifecycle_stream_uncertain = false;
             self.title_unconfirmed = false;
             self.kitty.confirm_cleanup();
@@ -338,7 +347,10 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
                 };
                 self.active.screen = desired.screen;
             }
-            if state_changed(desired.mouse, self.active.mouse, self.confirmed.mouse) {
+            if self.mouse_unconfirmed
+                || state_changed(desired.mouse, self.active.mouse, self.confirmed.mouse)
+            {
+                self.mouse_unconfirmed = cfg!(not(windows));
                 match desired.mouse {
                     MouseMode::Disabled => self.writer.queue(DisableMouseCapture)?,
                     MouseMode::Capture => self.writer.queue(EnableMouseCapture)?,
@@ -426,6 +438,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             self.kitty.mark_stream_uncertain();
         }
         output_result?;
+        self.mouse_unconfirmed = false;
         self.lifecycle_stream_uncertain = false;
         self.title_unconfirmed = false;
         if cleanup_kitty {
@@ -990,6 +1003,10 @@ mod tests {
         Ok(())
     }
 
+    // Crossterm uses native console APIs for mouse capture on Windows.
+    #[cfg(unix)]
+    mod mouse;
+
     #[test]
     fn applies_and_restores_owned_terminal_modes() -> io::Result<()> {
         let capabilities = Capabilities {
@@ -1330,6 +1347,7 @@ mod tests {
             writer: Vec::new(),
             capabilities: Capabilities::default(),
             active: active.clone(),
+            mouse_unconfirmed: false,
             confirmed: active,
             keyboard_pushed: false,
             original_raw_mode: false,
@@ -1432,6 +1450,7 @@ mod tests {
                 raw_mode: true,
                 ..TerminalState::default()
             },
+            mouse_unconfirmed: false,
             confirmed: TerminalState {
                 raw_mode: true,
                 ..TerminalState::default()
