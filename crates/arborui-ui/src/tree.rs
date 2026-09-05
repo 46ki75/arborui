@@ -1046,6 +1046,7 @@ impl UiTree {
                     || retained.cursor_intent != element.fixed_cursor_intent()
                     || retained.cursor_fingerprint != element.cursor_fingerprint()
                     || retained.dynamic_cursor != element.has_dynamic_cursor()
+                    || retained.cursor_child != element.cursor_child()
                     || retained.fill_background != element.fills_background()
                 {
                     requested.request(Invalidation::Paint);
@@ -1053,6 +1054,7 @@ impl UiTree {
                 if retained.child_offset != element.fixed_children_offset()
                     || retained.child_offset_fingerprint != element.child_offset_fingerprint()
                     || retained.dynamic_child_offset != element.has_dynamic_child_offset()
+                    || retained.child_offset_child != element.child_offset_child()
                 {
                     requested.request(Invalidation::Layout);
                 }
@@ -1073,9 +1075,11 @@ impl UiTree {
                 retained.cursor_intent = element.fixed_cursor_intent();
                 retained.cursor_fingerprint = element.cursor_fingerprint();
                 retained.dynamic_cursor = element.has_dynamic_cursor();
+                retained.cursor_child = element.cursor_child();
                 retained.child_offset = element.fixed_children_offset();
                 retained.child_offset_fingerprint = element.child_offset_fingerprint();
                 retained.dynamic_child_offset = element.has_dynamic_child_offset();
+                retained.child_offset_child = element.child_offset_child();
                 retained.fill_background = element.fills_background();
                 retained.paint_fingerprint = element.paint_fingerprint();
                 retained.has_painter = element.has_painter();
@@ -1178,9 +1182,11 @@ impl UiTree {
                 cursor_intent: element.fixed_cursor_intent(),
                 cursor_fingerprint: element.cursor_fingerprint(),
                 dynamic_cursor: element.has_dynamic_cursor(),
+                cursor_child: element.cursor_child(),
                 child_offset: element.fixed_children_offset(),
                 child_offset_fingerprint: element.child_offset_fingerprint(),
                 dynamic_child_offset: element.has_dynamic_child_offset(),
+                child_offset_child: element.child_offset_child(),
                 fill_background: element.fills_background(),
                 paint_fingerprint: element.paint_fingerprint(),
                 has_painter: element.has_painter(),
@@ -1250,7 +1256,25 @@ impl UiTree {
             .expect("mapped retained node exists");
         node.layout = bounds;
         node.content = content;
-        let child_offset = element.children_offset(bounds.size(), width_policy);
+        let (offset_size, child_content) = if let Some(index) = element.child_offset_child() {
+            let child = self.nodes[&retained].children.get(index).copied();
+            let child_content = child
+                .map(|child| self.layout_tree.layout(self.nodes[&child].layout_node))
+                .transpose()?
+                .map(|child| {
+                    Rect::from_origin_size(
+                        Point::new(
+                            child.content.x.saturating_sub(layout.content.x),
+                            child.content.y.saturating_sub(layout.content.y),
+                        ),
+                        child.content.size(),
+                    )
+                });
+            (content.size(), child_content)
+        } else {
+            (bounds.size(), None)
+        };
+        let child_offset = element.children_offset(offset_size, width_policy, child_content);
         let offset = offset.translated(child_offset.x, child_offset.y);
         let children = self.nodes[&retained].children.clone();
         for (child, child_element) in children.into_iter().zip(element.children()) {
@@ -1336,20 +1360,31 @@ impl UiTree {
         let (Some(node), Some(element)) = (self.nodes.get(&focused), elements.get(&focused)) else {
             return CursorState::HIDDEN;
         };
-        let Some(mut cursor) = element.cursor_intent(width_policy, node.layout.size()) else {
+        let cursor_box = if let Some(index) = element.cursor_child() {
+            let Some(child) = node
+                .children
+                .get(index)
+                .and_then(|child| self.nodes.get(child))
+            else {
+                return CursorState::HIDDEN;
+            };
+            child.content
+        } else {
+            node.layout
+        };
+        let Some(mut cursor) = element.cursor_intent(width_policy, cursor_box.size()) else {
             return CursorState::HIDDEN;
         };
         if cursor.visibility == CursorVisibility::Hidden {
             return CursorState::HIDDEN;
         }
-        cursor.position = node
-            .layout
+        cursor.position = cursor_box
             .origin()
             .translated(cursor.position.x, cursor.position.y);
         let viewport = Rect::from_origin_size(Point::ORIGIN, viewport);
         let mut clip = Some(viewport);
         let mut current = Some(focused);
-        let mut target = true;
+        let mut target = element.cursor_child().is_none();
         while let Some(candidate) = current {
             let Some(retained) = self.nodes.get(&candidate) else {
                 return CursorState::HIDDEN;
@@ -3022,5 +3057,6 @@ mod tests {
         Ok(())
     }
 
+    mod cursor_geometry;
     mod image_stacking;
 }

@@ -1,4 +1,4 @@
-use arborui_core::{CursorState, Point, Size, Style};
+use arborui_core::{CursorState, Point, Rect, Size, Style};
 use arborui_layout::LayoutStyle;
 use arborui_render::{Canvas, DrawError};
 use arborui_text::WidthPolicy;
@@ -43,11 +43,13 @@ pub struct Element<'a, Message> {
     cursor: Option<CursorState>,
     dynamic_cursor: Option<Box<CursorCallback<'a>>>,
     cursor_fingerprint: u64,
+    cursor_child: Option<usize>,
     paint: Option<Box<PaintCallback<'a>>>,
     paint_fingerprint: u64,
     child_offset: Point,
     dynamic_child_offset: Option<Box<ChildOffsetCallback<'a>>>,
     child_offset_fingerprint: u64,
+    child_offset_child: Option<usize>,
     fill_background: bool,
 }
 
@@ -59,7 +61,7 @@ struct EventHandler<'a, Message> {
 type HandlerCallback<'a, Message> = dyn Fn(&UiEvent, &mut EventContext<'_, Message>) + 'a;
 type PaintCallback<'a> = dyn Fn(Size, &mut Canvas<'_>) -> Result<(), DrawError> + 'a;
 type CursorCallback<'a> = dyn Fn(WidthPolicy, Size) -> CursorState + 'a;
-type ChildOffsetCallback<'a> = dyn Fn(Size, WidthPolicy) -> Point + 'a;
+type ChildOffsetCallback<'a> = dyn Fn(Size, WidthPolicy, Option<Rect>) -> Point + 'a;
 
 impl<'a, Message> Element<'a, Message> {
     /// Creates an empty container from ordered children.
@@ -82,11 +84,13 @@ impl<'a, Message> Element<'a, Message> {
             cursor: None,
             dynamic_cursor: None,
             cursor_fingerprint: 0,
+            cursor_child: None,
             paint: None,
             paint_fingerprint: 0,
             child_offset: Point::ORIGIN,
             dynamic_child_offset: None,
             child_offset_fingerprint: 0,
+            child_offset_child: None,
             fill_background: true,
         }
     }
@@ -114,11 +118,13 @@ impl<'a, Message> Element<'a, Message> {
             cursor: None,
             dynamic_cursor: None,
             cursor_fingerprint: 0,
+            cursor_child: None,
             paint: None,
             paint_fingerprint: 0,
             child_offset: Point::ORIGIN,
             dynamic_child_offset: None,
             child_offset_fingerprint: 0,
+            child_offset_child: None,
             fill_background: true,
         }
     }
@@ -225,10 +231,15 @@ impl<'a, Message> Element<'a, Message> {
     pub fn cursor(mut self, cursor: CursorState) -> Self {
         self.cursor = Some(cursor);
         self.dynamic_cursor = None;
+        self.cursor_child = None;
         self
     }
 
     /// Computes terminal cursor intent with the renderer's active width policy.
+    ///
+    /// The callback receives this element's border size and returns a position
+    /// local to its border origin. `fingerprint` must change when captured cursor
+    /// data changes. Calling this method clears any child cursor anchor.
     #[must_use]
     pub fn cursor_with(
         mut self,
@@ -238,7 +249,32 @@ impl<'a, Message> Element<'a, Message> {
         self.cursor = None;
         self.dynamic_cursor = Some(Box::new(cursor));
         self.cursor_fingerprint = fingerprint;
+        self.cursor_child = None;
         self
+    }
+
+    /// Computes cursor intent local to an ordered child's resolved content box.
+    ///
+    /// The callback receives the renderer's width policy and the child's content
+    /// size. Its position is translated from that content origin after layout and
+    /// descendant offsets. A missing child hides the cursor without calling the
+    /// callback. Only this element needs focus; the child need not be focusable.
+    ///
+    /// The cursor is clipped to this element's content box, ancestor content boxes,
+    /// and the viewport, not to the child's box, allowing an end caret in a spare
+    /// cell. `fingerprint` must change when captured cursor data changes. Child
+    /// index changes are detected independently. The callback is never retained.
+    /// Calling [`Self::cursor`] or [`Self::cursor_with`] clears the child anchor.
+    #[must_use]
+    pub fn cursor_with_child(
+        self,
+        child_index: usize,
+        fingerprint: u64,
+        cursor: impl Fn(WidthPolicy, Size) -> CursorState + 'a,
+    ) -> Self {
+        let mut element = self.cursor_with(fingerprint, cursor);
+        element.cursor_child = Some(child_index);
+        element
     }
 
     /// Adds frame-local custom painting after intrinsic content and before children.
@@ -262,10 +298,15 @@ impl<'a, Message> Element<'a, Message> {
     pub fn child_offset(mut self, offset: Point) -> Self {
         self.child_offset = offset;
         self.dynamic_child_offset = None;
+        self.child_offset_child = None;
         self
     }
 
     /// Computes descendant translation from resolved size and width policy.
+    ///
+    /// The callback receives this element's border size. `fingerprint` must change
+    /// when captured offset data changes. Calling this method clears any child
+    /// geometry anchor.
     #[must_use]
     pub fn child_offset_with(
         mut self,
@@ -273,8 +314,38 @@ impl<'a, Message> Element<'a, Message> {
         offset: impl Fn(Size, WidthPolicy) -> Point + 'a,
     ) -> Self {
         self.child_offset = Point::ORIGIN;
-        self.dynamic_child_offset = Some(Box::new(offset));
+        self.dynamic_child_offset =
+            Some(Box::new(move |size, policy, _child| offset(size, policy)));
         self.child_offset_fingerprint = fingerprint;
+        self.child_offset_child = None;
+        self
+    }
+
+    /// Computes descendant translation using one ordered child's resolved geometry.
+    ///
+    /// The callback receives this element's content size, the renderer's width
+    /// policy, and the child's content rectangle relative to this element's content
+    /// origin, before applying this element's descendant translation. The returned
+    /// offset translates all descendants, with normal content and viewport clipping.
+    /// This allows scrolling aligned content without duplicating layout calculations.
+    /// A missing child produces no translation and does not call the callback.
+    ///
+    /// `fingerprint` must change when captured offset data changes. Child index
+    /// changes are detected independently. The callback is never retained. Calling
+    /// [`Self::child_offset`] or [`Self::child_offset_with`] clears the child anchor.
+    #[must_use]
+    pub fn child_offset_with_child(
+        mut self,
+        child_index: usize,
+        fingerprint: u64,
+        offset: impl Fn(Size, WidthPolicy, Rect) -> Point + 'a,
+    ) -> Self {
+        self.child_offset = Point::ORIGIN;
+        self.dynamic_child_offset = Some(Box::new(move |size, policy, child| {
+            child.map_or(Point::ORIGIN, |child| offset(size, policy, child))
+        }));
+        self.child_offset_fingerprint = fingerprint;
+        self.child_offset_child = Some(child_index);
         self
     }
 
@@ -375,6 +446,10 @@ impl<'a, Message> Element<'a, Message> {
         self.dynamic_cursor.is_some()
     }
 
+    pub(crate) const fn cursor_child(&self) -> Option<usize> {
+        self.cursor_child
+    }
+
     pub(crate) fn paint_content(
         &self,
         size: Size,
@@ -397,10 +472,21 @@ impl<'a, Message> Element<'a, Message> {
         self.child_offset
     }
 
-    pub(crate) fn children_offset(&self, size: Size, width_policy: WidthPolicy) -> Point {
+    pub(crate) fn children_offset(
+        &self,
+        size: Size,
+        width_policy: WidthPolicy,
+        child: Option<Rect>,
+    ) -> Point {
         self.dynamic_child_offset
             .as_ref()
-            .map_or(self.child_offset, |offset| offset(size, width_policy))
+            .map_or(self.child_offset, |offset| {
+                offset(size, width_policy, child)
+            })
+    }
+
+    pub(crate) const fn child_offset_child(&self) -> Option<usize> {
+        self.child_offset_child
     }
 
     pub(crate) const fn child_offset_fingerprint(&self) -> u64 {
