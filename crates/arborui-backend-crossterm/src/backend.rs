@@ -17,8 +17,8 @@ use crossterm::{
     },
     style::{Attribute, Color, SetAttribute, SetBackgroundColor, SetForegroundColor},
     terminal::{
-        DisableLineWrap, EnableLineWrap, EnterAlternateScreen, LeaveAlternateScreen, SetTitle,
-        disable_raw_mode, enable_raw_mode, is_raw_mode_enabled,
+        DisableLineWrap, EnableLineWrap, EndSynchronizedUpdate, EnterAlternateScreen,
+        LeaveAlternateScreen, SetTitle, disable_raw_mode, enable_raw_mode, is_raw_mode_enabled,
     },
 };
 
@@ -48,6 +48,7 @@ pub struct CrosstermBackend<W: Write + Send> {
     confirmed: TerminalState,
     keyboard_pushed: bool,
     original_raw_mode: bool,
+    synchronized_update_pending: bool,
     lifecycle_stream_uncertain: bool,
     title_unconfirmed: bool,
     kitty: kitty::KittyState,
@@ -71,6 +72,7 @@ impl<W: Write + Send> CrosstermBackend<W> {
             mouse_unconfirmed: false,
             keyboard_pushed: false,
             original_raw_mode,
+            synchronized_update_pending: false,
             kitty: kitty::KittyState::new(kitty_single_command_from(
                 env::var("TERM_PROGRAM").ok().as_deref(),
             )),
@@ -134,11 +136,15 @@ impl<W: Write + Send> CrosstermBackend<W> {
     }
 
     fn recover_lifecycle_stream(&mut self) -> io::Result<()> {
-        if self.lifecycle_stream_uncertain {
-            // A partial title OSC can swallow subsequent modes and output even
-            // without Kitty graphics. Retain recovery until ST is flushed.
+        if self.lifecycle_stream_uncertain || self.synchronized_update_pending {
+            // ST escapes a partial OSC/APC before End can be interpreted as a
+            // mode change. Parser recovery does not confirm the title's value.
             self.writer.write_all(b"\x1b\\")?;
+            if self.synchronized_update_pending {
+                self.writer.queue(EndSynchronizedUpdate)?;
+            }
             self.writer.flush()?;
+            self.synchronized_update_pending = false;
             self.lifecycle_stream_uncertain = false;
         }
         Ok(())
@@ -495,6 +501,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
                 ..self.capabilities
             },
             image_update.as_ref(),
+            &mut self.synchronized_update_pending,
         );
         if output_result.is_err() && image_update.is_some() {
             self.kitty.mark_stream_uncertain();
@@ -620,6 +627,8 @@ mod tests {
     use arborui_text::WidthPolicy;
 
     use super::*;
+
+    mod synchronized_updates;
 
     #[test]
     fn writes_frame_patch_to_wrapped_writer() -> Result<(), Box<dyn std::error::Error>> {
@@ -1360,6 +1369,7 @@ mod tests {
             confirmed: active,
             keyboard_pushed: false,
             original_raw_mode: false,
+            synchronized_update_pending: false,
             lifecycle_stream_uncertain: false,
             title_unconfirmed: false,
             kitty: kitty::KittyState::default(),
@@ -1466,6 +1476,7 @@ mod tests {
             },
             keyboard_pushed: false,
             original_raw_mode: true,
+            synchronized_update_pending: false,
             lifecycle_stream_uncertain: false,
             title_unconfirmed: false,
             kitty: kitty::KittyState::default(),
