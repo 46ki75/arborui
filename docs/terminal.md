@@ -182,6 +182,21 @@ Restoration covers:
 `Drop` performs best-effort restoration. Explicit `restore` returns errors and
 is preferred during orderly shutdown.
 
+The Crossterm backend tracks unconfirmed title output independently of Kitty
+graphics. Before subsequent mode changes, frame output, or restoration, it
+terminates a possibly truncated OSC with ST and flushes that recovery. A failed
+recovery write or flush remains retryable. Parser recovery does not confirm the
+title's value: the backend still reapplies or clears an unconfirmed title, and
+only releases that obligation after successful lifecycle output and flush.
+
+Backend unit tests inject partial title and recovery failures and check parser
+state. An optional native Kitty parser check is ignored by default and is not a
+CI dependency. With Kitty installed, run:
+
+```sh
+ARBORUI_TEST_KITTY=kitty cargo test -p arborui-backend-crossterm partial_title_native_parser --all-features -- --ignored
+```
+
 ## Output Contract
 
 ```rust

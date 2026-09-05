@@ -44,6 +44,8 @@ pub struct CrosstermBackend<W: Write + Send> {
     confirmed: TerminalState,
     keyboard_pushed: bool,
     original_raw_mode: bool,
+    lifecycle_stream_uncertain: bool,
+    title_unconfirmed: bool,
     kitty: kitty::KittyState,
 }
 
@@ -57,6 +59,8 @@ impl<W: Write + Send> CrosstermBackend<W> {
         };
         Ok(Self {
             writer,
+            lifecycle_stream_uncertain: false,
+            title_unconfirmed: false,
             capabilities: detect_capabilities(),
             confirmed: active.clone(),
             active,
@@ -124,6 +128,17 @@ impl<W: Write + Send> CrosstermBackend<W> {
         Ok(())
     }
 
+    fn recover_lifecycle_stream(&mut self) -> io::Result<()> {
+        if self.lifecycle_stream_uncertain {
+            // A partial title OSC can swallow subsequent modes and output even
+            // without Kitty graphics. Retain recovery until ST is flushed.
+            self.writer.write_all(b"\x1b\\")?;
+            self.writer.flush()?;
+            self.lifecycle_stream_uncertain = false;
+        }
+        Ok(())
+    }
+
     fn settle_kitty_state(&mut self, screen: ScreenMode) -> io::Result<()> {
         let recover_stream = self.kitty.stream_uncertain();
         let cleanup_ids = self.kitty.cleanup_ids();
@@ -165,6 +180,7 @@ impl<W: Write + Send> CrosstermBackend<W> {
         let kitty_cleanup = self.kitty.cleanup_ids();
         let recover_kitty_stream = self.kitty.stream_uncertain();
         let output_result = (|| -> io::Result<()> {
+            self.recover_lifecycle_stream()?;
             kitty::write_recovery_if_needed(&mut self.writer, recover_kitty_stream)?;
             if recover_kitty_stream {
                 self.writer.queue(EnterAlternateScreen)?;
@@ -195,7 +211,12 @@ impl<W: Write + Send> CrosstermBackend<W> {
             {
                 self.writer.queue(EnableLineWrap)?;
             }
-            if self.active.title.is_some() || self.confirmed.title.is_some() {
+            if self.title_unconfirmed
+                || self.active.title.is_some()
+                || self.confirmed.title.is_some()
+            {
+                self.title_unconfirmed = true;
+                self.lifecycle_stream_uncertain = true;
                 self.writer.queue(SetTitle(""))?;
             }
             self.writer.queue(SetAttribute(Attribute::Reset))?;
@@ -207,6 +228,8 @@ impl<W: Write + Send> CrosstermBackend<W> {
         })();
 
         if output_result.is_ok() {
+            self.lifecycle_stream_uncertain = false;
+            self.title_unconfirmed = false;
             self.kitty.confirm_cleanup();
             // Output state is physically restored even if the separate raw-mode
             // operation fails, so a later activation must reapply every mode.
@@ -277,6 +300,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
     }
 
     fn apply_state(&mut self, desired: &TerminalState) -> Result<(), Self::Error> {
+        self.recover_lifecycle_stream()?;
         let desired = self.effective_state(desired);
         let leaving_alternate = desired.screen == ScreenMode::Main
             && (self.active.screen == ScreenMode::Alternate
@@ -381,8 +405,14 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
                 };
                 self.active.autowrap = desired.autowrap;
             }
-            if state_changed(&desired.title, &self.active.title, &self.confirmed.title) {
+            if self.title_unconfirmed
+                || state_changed(&desired.title, &self.active.title, &self.confirmed.title)
+            {
                 let title = sanitized_title(desired.title.as_deref().unwrap_or_default());
+                // Parser recovery alone does not confirm the title's value or
+                // discharge our obligation to clear even a partially sent title.
+                self.title_unconfirmed = true;
+                self.lifecycle_stream_uncertain = true;
                 self.writer.queue(SetTitle(title))?;
                 self.active.title.clone_from(&desired.title);
             }
@@ -396,6 +426,8 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
             self.kitty.mark_stream_uncertain();
         }
         output_result?;
+        self.lifecycle_stream_uncertain = false;
+        self.title_unconfirmed = false;
         if cleanup_kitty {
             self.kitty.confirm_cleanup();
         }
@@ -414,6 +446,7 @@ impl<W: Write + Send> TerminalBackend for CrosstermBackend<W> {
         patch
             .validate_for_width_policy(self.capabilities.width_policy)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+        self.recover_lifecycle_stream()?;
         let empty_scene = arborui_render::ImageScene::new();
         let image_scene = (self.capabilities.kitty_graphics
             && self.active.screen == ScreenMode::Alternate)
@@ -556,6 +589,8 @@ fn detect_kitty_graphics_from(
 
 #[cfg(test)]
 mod tests {
+    mod title;
+
     use std::io::Write;
 
     use arborui_core::{Point, Rect, Style};
@@ -1094,6 +1129,7 @@ mod tests {
     struct FailWriteOnceAfter {
         bytes: Vec<u8>,
         fail_after: Option<usize>,
+        fail_flush: bool,
     }
 
     impl Write for FailWriteOnceAfter {
@@ -1113,6 +1149,9 @@ mod tests {
         }
 
         fn flush(&mut self) -> io::Result<()> {
+            if std::mem::take(&mut self.fail_flush) {
+                return Err(io::Error::other("injected flush failure"));
+            }
             Ok(())
         }
     }
@@ -1294,6 +1333,8 @@ mod tests {
             confirmed: active,
             keyboard_pushed: false,
             original_raw_mode: false,
+            lifecycle_stream_uncertain: false,
+            title_unconfirmed: false,
             kitty: kitty::KittyState::default(),
         };
 
@@ -1397,6 +1438,8 @@ mod tests {
             },
             keyboard_pushed: false,
             original_raw_mode: true,
+            lifecycle_stream_uncertain: false,
+            title_unconfirmed: false,
             kitty: kitty::KittyState::default(),
         };
 
