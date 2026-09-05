@@ -244,7 +244,8 @@ impl<'a, Message> Element<'a, Message> {
     /// Adds frame-local custom painting after intrinsic content and before children.
     ///
     /// `fingerprint` must change whenever captured visual data changes so retained
-    /// invalidation can detect the update.
+    /// invalidation can detect the update. All fingerprint values, including zero,
+    /// are valid; adding or removing a painter is detected independently.
     #[must_use]
     pub fn paint(
         mut self,
@@ -386,6 +387,10 @@ impl<'a, Message> Element<'a, Message> {
 
     pub(crate) const fn paint_fingerprint(&self) -> u64 {
         self.paint_fingerprint
+    }
+
+    pub(crate) const fn has_painter(&self) -> bool {
+        self.paint.is_some()
     }
 
     pub(crate) const fn fixed_children_offset(&self) -> Point {
