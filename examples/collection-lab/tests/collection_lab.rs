@@ -182,6 +182,35 @@ fn selection_and_focus_survive_unmounting_and_reorder_by_stable_key() {
 }
 
 #[test]
+fn startup_end_uses_terminal_viewport_before_resize() {
+    let size = Size::new(48, 12);
+    let mut app = TestApp::new(CollectionLab::from_terminal_size(size), size);
+
+    app.key(KeyCode::End);
+
+    assert_eq!(app.application().active_key(), Some(99_999));
+    let startup_viewport = app.application().viewport_height();
+    let startup_scroll = app.application().scroll_offset();
+    let startup_range = app.application().visible_range();
+    let startup_frame = app.frame().clone();
+
+    app.resize(size);
+
+    assert_eq!(app.application().active_key(), Some(99_999));
+    assert_eq!(app.application().viewport_height(), 8);
+    assert_eq!(app.application().scroll_offset(), 99_992);
+    assert!(app.frame().characters().contains("Item 099999"));
+    assert!(
+        startup_frame.characters().contains("Item 099999"),
+        "End must reveal the active item before resize: viewport={startup_viewport}, scroll={startup_scroll}"
+    );
+    assert_eq!(startup_viewport, app.application().viewport_height());
+    assert_eq!(startup_scroll, app.application().scroll_offset());
+    assert_eq!(startup_range, app.application().visible_range());
+    assert_eq!(&startup_frame, app.frame());
+}
+
+#[test]
 fn resize_recomputes_the_bounded_window() {
     let mut app = TestApp::new(
         CollectionLab::new(CollectionMode::Fixed, 10_000, 4),
