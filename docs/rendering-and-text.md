@@ -11,11 +11,11 @@ optimizations are introduced.
 
 Terminal text has at least three distinct coordinate systems:
 
-| Coordinate | Use |
-| --- | --- |
-| UTF-8 byte offset | Storage and interchange |
-| Grapheme index | User-visible cursor and deletion behavior |
-| Display column | Layout and terminal placement |
+| Coordinate        | Use                                       |
+| ----------------- | ----------------------------------------- |
+| UTF-8 byte offset | Storage and interchange                   |
+| Grapheme index    | User-visible cursor and deletion behavior |
+| Display column    | Layout and terminal placement             |
 
 Public editing APIs should use typed positions instead of unlabelled integers.
 Byte offsets may be exposed for interoperability, but they are not cursor
@@ -172,7 +172,11 @@ MiB per image. A renderer-created scene is also limited to 4096 placements and
 The optional `arborui-image` crate content-detects BMP, GIF, ICO, JPEG, PNG,
 PNM, QOI, TGA, TIFF, and WebP, normalizes orientation and color space, and
 returns an `RgbaImage`. Animated formats use their first frame. It applies
-decoder limits before allocating the final 64 MiB-bounded RGBA payload. SVG and
+decoder limits before allocating the final 64 MiB-bounded RGBA payload. WebP EXIF
+reads additionally enforce a 64 MiB metadata limit before allocation, including
+metadata ranges discovered in malformed animation frames. Other codec-internal
+allocation limits remain best-effort rather than an aggregate process-memory
+ceiling. SVG and
 other vector formats still require application-provided rasterization. The
 renderer does not pass encoded data through to a terminal or perform image
 decoding itself.

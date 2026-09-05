@@ -21,6 +21,7 @@ workspace = true
 
 [dependencies]
 arborui-render = { workspace = true }
+image-webp = "=0.2.4"
 image = { version = "=0.25.8", default-features = false, features = [
   "bmp",
   "gif",
