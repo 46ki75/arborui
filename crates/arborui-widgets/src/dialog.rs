@@ -53,7 +53,6 @@ impl<'a, Message: 'a> Dialog<'a, Message> {
             .on_event(EventPhase::Target, |event, context| {
                 if matches!(event, UiEvent::Pointer(_)) {
                     context.mark_handled();
-                    context.prevent_default();
                 }
             });
 

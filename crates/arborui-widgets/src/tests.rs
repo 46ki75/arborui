@@ -237,6 +237,8 @@ enum DialogMessage {
     Dismiss,
 }
 
+mod dialog_focus;
+
 #[test]
 fn dialog_owns_focus_and_blocks_lower_pointer_targets() -> Result<(), Box<dyn Error>> {
     let background = Button::new("background", || DialogMessage::Background)
