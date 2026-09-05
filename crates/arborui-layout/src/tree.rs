@@ -933,6 +933,77 @@ mod tests {
     }
 
     #[test]
+    fn subtree_compute_does_not_corrupt_parent_cache() -> Result<(), LayoutError> {
+        let mut tree = LayoutTree::new();
+        let spacer = tree.add(LayoutStyle::new().size(Dimension::cells(3), Dimension::cells(1)));
+        let leaf = tree.add(LayoutStyle::new().size(Dimension::cells(2), Dimension::cells(1)));
+        let parent = tree.add_with_children(
+            LayoutStyle::new().size(Dimension::cells(10), Dimension::cells(1)),
+            &[spacer, leaf],
+        )?;
+
+        tree.compute(parent, Size::new(10, 1), |_, _| Size::ZERO)?;
+        let parent_layout = tree.layout(parent)?;
+        let spacer_layout = tree.layout(spacer)?;
+        let leaf_layout = tree.layout(leaf)?;
+        assert_eq!(
+            (leaf_layout.bounds, leaf_layout.order),
+            (Rect::new(3, 0, 2, 1), 1)
+        );
+
+        tree.compute(leaf, Size::new(10, 1), |_, _| Size::ZERO)?;
+        let root_layout = tree.layout(leaf)?;
+        assert_eq!(
+            (root_layout.bounds, root_layout.order),
+            (Rect::new(0, 0, 2, 1), 0)
+        );
+
+        tree.compute(parent, Size::new(10, 1), |_, _| Size::ZERO)?;
+        assert_eq!(tree.layout(leaf)?, leaf_layout);
+        assert_eq!(tree.layout(spacer)?, spacer_layout);
+        assert_eq!(tree.layout(parent)?, parent_layout);
+        Ok(())
+    }
+
+    #[test]
+    fn staged_subtree_compute_does_not_corrupt_parent_cache() -> Result<(), LayoutError> {
+        let mut source = LayoutTree::new();
+        let spacer = source.add(LayoutStyle::new().size(Dimension::cells(3), Dimension::cells(1)));
+        let leaf = source.add(LayoutStyle::new().size(Dimension::cells(2), Dimension::cells(1)));
+        let parent = source.add_with_children(
+            LayoutStyle::new().size(Dimension::cells(10), Dimension::cells(1)),
+            &[spacer, leaf],
+        )?;
+
+        source.compute(parent, Size::new(10, 1), |_, _| Size::ZERO)?;
+        let parent_layout = source.layout(parent)?;
+        let spacer_layout = source.layout(spacer)?;
+        let leaf_layout = source.layout(leaf)?;
+        assert_eq!(
+            (leaf_layout.bounds, leaf_layout.order),
+            (Rect::new(3, 0, 2, 1), 1)
+        );
+
+        let mut staged = source.clone_for_staging();
+        assert!(source.shares_engine_with(&staged));
+        staged.compute(leaf, Size::new(10, 1), |_, _| Size::ZERO)?;
+        let root_layout = staged.layout(leaf)?;
+        assert_eq!(
+            (root_layout.bounds, root_layout.order),
+            (Rect::new(0, 0, 2, 1), 0)
+        );
+        assert_eq!(source.layout(leaf)?, leaf_layout);
+
+        source.compute(parent, Size::new(10, 1), |_, _| Size::ZERO)?;
+        assert!(source.shares_engine_with(&staged));
+        assert_eq!(source.layout(leaf)?, leaf_layout);
+        assert_eq!(source.layout(spacer)?, spacer_layout);
+        assert_eq!(source.layout(parent)?, parent_layout);
+        assert_eq!(staged.layout(leaf)?, root_layout);
+        Ok(())
+    }
+
+    #[test]
     fn removing_a_subtree_updates_its_parent() -> Result<(), LayoutError> {
         let mut tree = LayoutTree::new();
         let descendant = tree.add(LayoutStyle::default());
