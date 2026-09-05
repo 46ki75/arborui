@@ -698,11 +698,17 @@ impl RatatuiTableLab {
                     .fg(Color::LightYellow)
                     .add_modifier(Modifier::BOLD),
             );
+        // Ratatui auto-reveals selected rows. Only highlight one-row records inside the
+        // clipped body, excluding both panel borders, the header, and overscan.
+        let visible_start = range.start().saturating_add(range.local_offset());
+        let visible_end = visible_start
+            .saturating_add(usize::from(panel_height.saturating_sub(3)))
+            .min(range.end());
         let selected = self
             .model
             .active_key()
             .and_then(|key| usize::try_from(key).ok())
-            .filter(|index| *index >= range.start() && *index < range.end())
+            .filter(|index| area.width > 2 && *index >= visible_start && *index < visible_end)
             .map(|index| index.saturating_sub(range.start()));
         let mut state = TableState::new()
             .with_offset(range.local_offset())
