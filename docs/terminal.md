@@ -194,11 +194,11 @@ pub enum WriteOutcome {
 
 The meanings are strict:
 
-| Outcome | Meaning | Renderer action |
-| --- | --- | --- |
-| `Applied` | The complete patch was accepted in order | Commit prepared frame |
-| `Deferred` | No bytes were applied | Retry or discard |
-| `StateUnknown` | Output may be partial | Force full repaint |
+| Outcome        | Meaning                                  | Renderer action       |
+| -------------- | ---------------------------------------- | --------------------- |
+| `Applied`      | The complete patch was accepted in order | Commit prepared frame |
+| `Deferred`     | No bytes were applied                    | Retry or discard      |
+| `StateUnknown` | Output may be partial                    | Force full repaint    |
 
 A backend must not report `Deferred` after applying a prefix of a patch.
 Returning an error also means output may be partial. `TerminalSession` records
@@ -249,8 +249,12 @@ Kitty output is emitted only on the alternate screen. The backend sends decoded
 pixels as zlib-compressed Kitty direct transfers (`t=d`, `o=z`), using 24-bit
 RGB for opaque sources and 32-bit RGBA when alpha is present. It suppresses
 protocol responses with `q=2` and combines each source's first upload and
-placement with `a=T` and `C=1`. Direct payloads use one command because xterm.js
-does not reliably complete chunked image uploads. Placement z-indexes preserve scene order above
+placement with `a=T` and `C=1`. Direct payloads use chunks of at most 4,096 base64
+bytes, with full metadata on the first command and only `m` and `q` on continuations.
+Only sessions identified by `TERM_PROGRAM=vscode` or `TERM_PROGRAM=xterm.js`
+(case-insensitive) retain single-command uploads because xterm.js does not reliably
+complete chunked uploads. Explicit `Enabled` without either hint uses protocol-compliant
+chunks as well. Placement z-indexes preserve scene order above
 fallback cells. The backend assigns Kitty image IDs because terminals including
 xterm.js cannot reliably resolve image numbers in separate placement commands.
 Complete repaints explicitly erase the terminal before restoring every cell so
