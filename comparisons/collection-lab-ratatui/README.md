@@ -26,10 +26,13 @@ settle counters remain enabled. Ordinary tests and output metrics retain default
 recording because the output probe serializes `frame_patches()`. Model-only
 allocation probes are unchanged; separate phase probes do not use `TestApp`.
 
-No replacement measurements are published with this correction. Revalidation
-requires a serial normal 108-case Criterion run, then separate output, memory,
-and phase probes on the combined fixes, with commit/toolchain/environment
-provenance and a linked report. Smoke tests establish execution, not a baseline.
+The [2026-09-05 revalidation report](revalidation-2026-09-05.md) and
+[complete dataset](revalidation-2026-09-05.json) now record the serial normal
+108-case Criterion run and separate output, memory, and phase probes on the
+combined #22-#26 code fixes. They identify the measured tree, toolchain, locked
+dependency graph, environment, and measurement boundaries. All older tables
+below remain historical; the new host/run is not a before/after measurement of
+patch-recording policy or a portable framework ranking.
 
 ## Comparison Contract
 

@@ -20,10 +20,14 @@ render and settlement, without moving clone/deallocation work outside the timer.
 Default test recording, output serialization metrics, model-only allocations,
 and separate phase instrumentation are unchanged. See the
 [comparison methodology](../../../comparisons/collection-lab-ratatui/README.md#measurement-status).
-Deterministic checks and benchmark smoke runs do not establish new numerical
-baselines. A normal serial 108-case Criterion run and separate output, memory,
-and phase probes on the combined fixes remain pending, followed by a linked
-revalidation report with commit, toolchain, and environment provenance.
+The [2026-09-05 revalidation report](../../../comparisons/collection-lab-ratatui/revalidation-2026-09-05.md)
+and [complete dataset](../../../comparisons/collection-lab-ratatui/revalidation-2026-09-05.json)
+now record a normal serial 108-case Criterion run and separate output, memory,
+and phase probes on the combined #22-#26 code fixes, with measured-tree,
+toolchain, locked-dependency, and environment provenance. All older tables here
+remain historical. The new host/run is not a before/after measurement of
+patch-recording policy or a portable framework ranking; smoke tests alone still
+do not establish numerical baselines.
 
 ## Question
 
