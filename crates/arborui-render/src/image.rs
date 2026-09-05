@@ -467,10 +467,13 @@ impl ImageScene {
         self.resume_repaint_scope(depth);
         let mut newly_damaged = false;
         for (placement, stale) in self.placements.iter().zip(&mut self.stale) {
-            let destination = placement.destination;
+            let destination = placement
+                .destination
+                .intersection(clip)
+                .unwrap_or(Rect::ZERO);
             let start = usize::try_from(destination.y).unwrap_or_default();
             let end = usize::try_from(destination.bottom()).unwrap_or_default();
-            let damaged = destination.intersects(clip)
+            let damaged = !destination.is_empty()
                 && rows
                     .get(start..end.min(rows.len()))
                     .is_some_and(|rows| rows.iter().any(|selected| *selected));

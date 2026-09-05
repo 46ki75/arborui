@@ -2075,6 +2075,99 @@ mod tests {
     }
 
     #[test]
+    fn damage_rows_outside_clip_preserve_images() -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let size = Size::new(1, 2);
+        let destination = Rect::new(0, 0, 1, 2);
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let initial = renderer.prepare(size, CursorState::HIDDEN, |canvas| {
+            let mut canvas = canvas
+                .scoped(destination, Point::ORIGIN)
+                .with_hit(Some(crate::HitId::new(7)));
+            canvas.draw_text(Point::ORIGIN, "a\nb", Style::default(), None)?;
+            assert!(canvas.draw_image(destination, &image)?);
+            Ok(())
+        })?;
+        renderer.commit(initial)?;
+
+        for (clip, rows) in [
+            (Rect::new(0, 0, 1, 1), &[false, true][..]),
+            (Rect::new(0, 1, 1, 1), &[true, false][..]),
+            (Rect::new(0, 1, 1, 1), &[false][..]),
+            (Rect::new(0, 1, 1, 1), &[][..]),
+            (Rect::ZERO, &[true, true][..]),
+            (Rect::new(1, 0, 1, 2), &[true, true][..]),
+        ] {
+            let unchanged = renderer.prepare_from_current(CursorState::HIDDEN, |canvas| {
+                // Damage marking is eager, so establish the clip before the row mask.
+                let mut clipped = canvas.scoped(clip, Point::ORIGIN);
+                let mut damaged = clipped.with_damage_rows(rows);
+                assert_eq!(damaged.fill(destination, Style::default())?, 0);
+                let mut nested = damaged.with_damage_rows(&[true, true]);
+                assert_eq!(nested.fill(destination, Style::default())?, 0);
+                Ok(())
+            })?;
+
+            assert_eq!(unchanged.buffer(), renderer.current());
+            assert_eq!(unchanged.hit_map(), renderer.hit_map());
+            assert_eq!(
+                unchanged.images(),
+                renderer.images(),
+                "clip={clip:?}, rows={rows:?}"
+            );
+            assert!(unchanged.patch().images.is_none());
+            assert!(unchanged.patch().is_empty());
+            renderer.discard(unchanged);
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn damage_rows_inside_clip_remove_or_replay_images() -> Result<(), Box<dyn std::error::Error>> {
+        let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
+        let size = Size::new(1, 2);
+        let destination = Rect::new(0, 0, 1, 2);
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let initial = renderer.prepare(size, CursorState::HIDDEN, |canvas| {
+            assert!(canvas.draw_image(destination, &image)?);
+            Ok(())
+        })?;
+        renderer.commit(initial)?;
+
+        for replay in [false, true] {
+            let repainted = renderer.prepare_from_current(CursorState::HIDDEN, |canvas| {
+                {
+                    let mut clipped = canvas.scoped(Rect::new(0, 0, 1, 1), Point::ORIGIN);
+                    let mut damaged = clipped.with_damage_rows(&[true, false]);
+                    assert_eq!(damaged.fill(destination, Style::default())?, 1);
+                    // Later no-op damage must not clear an already-stale placement.
+                    let mut nested = damaged.with_damage_rows(&[false, false]);
+                    assert_eq!(nested.fill(destination, Style::default())?, 0);
+                }
+                {
+                    let mut clipped = canvas.scoped(Rect::ZERO, Point::ORIGIN);
+                    let _damaged = clipped.with_damage_rows(&[true, true]);
+                }
+                if replay {
+                    assert!(canvas.draw_image(destination, &image)?);
+                }
+                Ok(())
+            })?;
+
+            if replay {
+                assert_eq!(repainted.images(), renderer.images());
+                assert!(repainted.patch().images.is_none());
+                assert!(repainted.patch().is_empty());
+            } else {
+                assert!(repainted.images().is_empty());
+                assert_eq!(repainted.patch().images, Some(ImageScene::new()));
+            }
+            renderer.discard(repainted);
+        }
+        Ok(())
+    }
+
+    #[test]
     fn selective_repaint_removes_and_replays_intersecting_images()
     -> Result<(), Box<dyn std::error::Error>> {
         let image = crate::RgbaImage::new(1, 1, vec![0; 4])?;
