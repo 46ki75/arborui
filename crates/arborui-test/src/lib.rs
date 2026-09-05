@@ -8,7 +8,7 @@ mod backend;
 mod clock;
 mod frame;
 
-pub use app::{SettleOutcome, SettleReport, TestApp, TestError};
+pub use app::{SettleOutcome, SettleReport, TestApp, TestAppOptions, TestError};
 pub use backend::TestBackendError;
 pub use frame::{TestCell, TestCellContent, TestFrame};
 

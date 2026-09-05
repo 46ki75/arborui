@@ -5,6 +5,35 @@ Lab list, table, scrolling-log, overlay, and Unicode clipping experiments. It is
 product workspace so Ratatui does not become part of ArborUI's facade-only
 example dependency graph.
 
+## Measurement Status
+
+The timing and `TestApp` allocation results below are **historical evidence, not
+a valid baseline for the current measurement policy**. Before
+[#25](https://github.com/46ki75/arborui/issues/25), ArborUI's persistent fixtures
+cloned and retained every submitted patch in unbounded test-backend history;
+Ratatui retained current buffers. Timed turns and untimed resets both accumulated
+history, introducing iteration-dependent allocation and memory pressure. Cold
+initial renders and `TestApp` allocation probes also included patch recording.
+Historical timings, allocation totals, retained/peak bytes, ratios, and claimed
+improvements involving those fixtures are preserved only as records of that
+instrumented setup, not as current performance or framework-memory claims.
+
+All timing fixtures, including cold construction, and all `memory_probe`
+`TestApp` fixtures now explicitly disable recording **before initial settlement**.
+This skips the patch clone and history push, rather than clearing history outside
+timed iterations. Validation, committed frames, scripted output recovery, and
+settle counters remain enabled. Ordinary tests and output metrics retain default
+recording because the output probe serializes `frame_patches()`. Model-only
+allocation probes are unchanged; separate phase probes do not use `TestApp`.
+
+The [2026-09-05 revalidation report](revalidation-2026-09-05.md) and
+[complete dataset](revalidation-2026-09-05.json) now record the serial normal
+108-case Criterion run and separate output, memory, and phase probes on the
+combined #22-#26 code fixes. They identify the measured tree, toolchain, locked
+dependency graph, environment, and measurement boundaries. All older tables
+below remain historical; the new host/run is not a before/after measurement of
+patch-recording policy or a portable framework ranking.
+
 ## Comparison Contract
 
 Both implementations use the same application-owned visible-range providers,

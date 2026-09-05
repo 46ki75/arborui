@@ -2,6 +2,33 @@
 
 Experiment dates: 2026-07-16 and 2026-07-17
 
+## Measurement Status
+
+The comparison timings and `TestApp` allocation figures in this document are
+**historical, not a valid baseline for the current measurement policy**.
+[#25](https://github.com/46ki75/arborui/issues/25) identified unbounded patch
+recording in persistent ArborUI comparison fixtures, including both timed turns
+and untimed resets, while Ratatui retained current buffers. Cold construction
+and `TestApp` memory probes also paid for patch clones and retained test
+instrumentation. Their historical timing/allocation values, ratios, and claimed
+improvements remain only as records of the old setup, not current performance
+or framework-memory claims. This caveat applies globally across workloads, not
+only to any one result table.
+
+Timing and `TestApp` memory fixtures now disable recording before the first
+render and settlement, without moving clone/deallocation work outside the timer.
+Default test recording, output serialization metrics, model-only allocations,
+and separate phase instrumentation are unchanged. See the
+[comparison methodology](../../../comparisons/collection-lab-ratatui/README.md#measurement-status).
+The [2026-09-05 revalidation report](../../../comparisons/collection-lab-ratatui/revalidation-2026-09-05.md)
+and [complete dataset](../../../comparisons/collection-lab-ratatui/revalidation-2026-09-05.json)
+now record a normal serial 108-case Criterion run and separate output, memory,
+and phase probes on the combined #22-#26 code fixes, with measured-tree,
+toolchain, locked-dependency, and environment provenance. All older tables here
+remain historical. The new host/run is not a before/after measurement of
+patch-recording policy or a portable framework ranking; smoke tests alone still
+do not establish numerical baselines.
+
 ## Question
 
 Can a downstream ArborUI application implement and deterministically test a

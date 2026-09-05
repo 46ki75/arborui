@@ -12,7 +12,7 @@ use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
     TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
-use arborui_test::{KeyCode, Size, TestApp};
+use arborui_test::{KeyCode, Size, TestApp, TestAppOptions};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use ratatui::{Terminal, backend::TestBackend};
 
@@ -191,9 +191,10 @@ fn resize_storm_turns(criterion: &mut Criterion) {
     for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
         let mode_name = mode_name(mode);
         group.bench_function(BenchmarkId::new("arborui", mode_name), |bencher| {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 CollectionLab::new(mode, ITEM_COUNT, viewport_height(BASE_HEIGHT)),
                 base_size(),
+                measurement_options(),
             );
             application.send(Message::SelectActive);
             bencher.iter(|| {
@@ -223,9 +224,10 @@ fn resize_storm_turns(criterion: &mut Criterion) {
     }
 
     group.bench_function(BenchmarkId::new("arborui", "table"), |bencher| {
-        let mut application = TestApp::new(
+        let mut application = TestApp::with_options(
             TableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
             base_size(),
+            measurement_options(),
         );
         application.send(TableAction::SelectActive);
         bencher.iter(|| {
@@ -250,7 +252,7 @@ fn resize_storm_turns(criterion: &mut Criterion) {
     });
 
     group.bench_function(BenchmarkId::new("arborui", "log-paused"), |bencher| {
-        let mut application = TestApp::new(
+        let mut application = TestApp::with_options(
             LogLab::new(
                 ITEM_COUNT,
                 ITEM_COUNT.saturating_mul(2),
@@ -258,6 +260,7 @@ fn resize_storm_turns(criterion: &mut Criterion) {
                 BASE_HEIGHT,
             ),
             base_size(),
+            measurement_options(),
         );
         application.send(LogAction::PageUp);
         bencher.iter(|| {
@@ -283,9 +286,10 @@ fn resize_storm_turns(criterion: &mut Criterion) {
     });
 
     group.bench_function(BenchmarkId::new("arborui", "overlay-open"), |bencher| {
-        let mut application = TestApp::new(
+        let mut application = TestApp::with_options(
             OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
             overlay_size(),
+            measurement_options(),
         );
         application.send(OverlayAction::Open);
         application.key(KeyCode::Tab);
@@ -308,9 +312,10 @@ fn resize_storm_turns(criterion: &mut Criterion) {
     });
 
     group.bench_function(BenchmarkId::new("arborui", "unicode"), |bencher| {
-        let mut application = TestApp::new(
+        let mut application = TestApp::with_options(
             UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
             unicode_size(),
+            measurement_options(),
         );
         for _ in 0..UNICODE_RESIZE_STORM_OFFSET {
             application.send(UnicodeAction::ShiftRight);
@@ -345,9 +350,10 @@ fn unicode_cold_initial_render(criterion: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     group.bench_function("arborui", |bencher| {
         bencher.iter(|| {
-            black_box(TestApp::new(
+            black_box(TestApp::with_options(
                 UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
                 unicode_size(),
+                measurement_options(),
             ));
         });
     });
@@ -370,9 +376,10 @@ fn unicode_scenario_turns(criterion: &mut Criterion) {
             criterion.benchmark_group(format!("comparison/unicode-turn/{}", scenario.name()));
         group.throughput(Throughput::Elements(1));
         group.bench_function("arborui", |bencher| {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
                 unicode_size(),
+                measurement_options(),
             );
             prepare_arborui_unicode(&mut application, scenario);
             bencher.iter_custom(|iterations| {
@@ -411,9 +418,10 @@ fn overlay_cold_initial_render(criterion: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     group.bench_function("arborui", |bencher| {
         bencher.iter(|| {
-            black_box(TestApp::new(
+            black_box(TestApp::with_options(
                 OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
                 overlay_size(),
+                measurement_options(),
             ));
         });
     });
@@ -436,9 +444,10 @@ fn overlay_scenario_turns(criterion: &mut Criterion) {
             criterion.benchmark_group(format!("comparison/overlay-turn/{}", scenario.name()));
         group.throughput(Throughput::Elements(1));
         group.bench_function("arborui", |bencher| {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
                 overlay_size(),
+                measurement_options(),
             );
             prepare_arborui_overlay(&mut application, scenario);
             bencher.iter_custom(|iterations| {
@@ -480,9 +489,10 @@ fn log_line_scrolling(criterion: &mut Criterion) {
             BenchmarkId::new("arborui", item_count),
             &item_count,
             |bencher, count| {
-                let mut application = TestApp::new(
+                let mut application = TestApp::with_options(
                     LogLab::new(*count, *count, BASE_WIDTH, BASE_HEIGHT),
                     base_size(),
+                    measurement_options(),
                 );
                 let mut up = true;
                 bencher.iter(|| {
@@ -515,9 +525,10 @@ fn log_cold_initial_render(criterion: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     group.bench_function("arborui", |bencher| {
         bencher.iter(|| {
-            black_box(TestApp::new(
+            black_box(TestApp::with_options(
                 LogLab::new(ITEM_COUNT, ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
                 base_size(),
+                measurement_options(),
             ));
         });
     });
@@ -541,7 +552,7 @@ fn log_scenario_turns(criterion: &mut Criterion) {
             criterion.benchmark_group(format!("comparison/log-turn/{}", scenario.name()));
         group.throughput(Throughput::Elements(1));
         group.bench_function("arborui", |bencher| {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 LogLab::new(
                     ITEM_COUNT,
                     ITEM_COUNT.saturating_add(1_000_000),
@@ -549,6 +560,7 @@ fn log_scenario_turns(criterion: &mut Criterion) {
                     BASE_HEIGHT,
                 ),
                 base_size(),
+                measurement_options(),
             );
             prepare_arborui_log(&mut application, scenario);
             let mut generation = 1u64;
@@ -600,8 +612,11 @@ fn table_line_navigation(criterion: &mut Criterion) {
             BenchmarkId::new("arborui", item_count),
             &item_count,
             |bencher, count| {
-                let mut application =
-                    TestApp::new(TableLab::new(*count, BASE_WIDTH, BASE_HEIGHT), base_size());
+                let mut application = TestApp::with_options(
+                    TableLab::new(*count, BASE_WIDTH, BASE_HEIGHT),
+                    base_size(),
+                    measurement_options(),
+                );
                 let mut down = true;
                 bencher.iter(|| {
                     let action = if down {
@@ -641,9 +656,10 @@ fn table_cold_initial_render(criterion: &mut Criterion) {
     group.throughput(Throughput::Elements(1));
     group.bench_function("arborui", |bencher| {
         bencher.iter(|| {
-            black_box(TestApp::new(
+            black_box(TestApp::with_options(
                 TableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
                 base_size(),
+                measurement_options(),
             ));
         });
     });
@@ -666,9 +682,10 @@ fn table_scenario_turns(criterion: &mut Criterion) {
             criterion.benchmark_group(format!("comparison/table-turn/{}", scenario.name()));
         group.throughput(Throughput::Elements(1));
         group.bench_function("arborui", |bencher| {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 TableLab::new(ITEM_COUNT, BASE_WIDTH, BASE_HEIGHT),
                 base_size(),
+                measurement_options(),
             );
             prepare_arborui_table(&mut application, scenario);
             let mut revision = 1u64;
@@ -721,9 +738,10 @@ fn line_navigation(criterion: &mut Criterion) {
                 BenchmarkId::new(format!("arborui/{mode_name}"), item_count),
                 &item_count,
                 |bencher, count| {
-                    let mut application = TestApp::new(
+                    let mut application = TestApp::with_options(
                         CollectionLab::new(mode, *count, viewport_height(BASE_HEIGHT)),
                         base_size(),
+                        measurement_options(),
                     );
                     let mut down = true;
                     bencher.iter_custom(|iterations| {
@@ -773,9 +791,10 @@ fn cold_initial_render(criterion: &mut Criterion) {
         let mode_name = mode_name(mode);
         group.bench_function(BenchmarkId::new("arborui", mode_name), |bencher| {
             bencher.iter(|| {
-                black_box(TestApp::new(
+                black_box(TestApp::with_options(
                     CollectionLab::new(mode, ITEM_COUNT, viewport_height(BASE_HEIGHT)),
                     base_size(),
+                    measurement_options(),
                 ));
             });
         });
@@ -802,9 +821,10 @@ fn scenario_turns(criterion: &mut Criterion) {
         for mode in [CollectionMode::Fixed, CollectionMode::Variable] {
             let mode_name = mode_name(mode);
             group.bench_function(BenchmarkId::new("arborui", mode_name), |bencher| {
-                let mut application = TestApp::new(
+                let mut application = TestApp::with_options(
                     CollectionLab::new(mode, ITEM_COUNT, viewport_height(BASE_HEIGHT)),
                     base_size(),
+                    measurement_options(),
                 );
                 prepare_arborui_selection(&mut application, scenario);
                 bencher.iter_custom(|iterations| {
@@ -1517,6 +1537,13 @@ fn ratatui_unicode_resize(
 
 fn viewport_height(terminal_height: u16) -> usize {
     terminal_height.saturating_sub(4).max(1) as usize
+}
+
+fn measurement_options() -> TestAppOptions {
+    TestAppOptions {
+        record_patches: false,
+        ..TestAppOptions::default()
+    }
 }
 
 const fn base_size() -> Size {

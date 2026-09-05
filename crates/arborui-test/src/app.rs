@@ -21,6 +21,31 @@ use crate::{
 
 const MAX_SETTLE_TURNS: usize = 4_096;
 
+/// Configuration applied before a [`TestApp`]'s initial render and settlement.
+#[derive(Clone, Debug)]
+pub struct TestAppOptions {
+    /// Grapheme width rules used by both the renderer and terminal validation.
+    pub width_policy: WidthPolicy,
+    /// Scheduler and external event ingress configuration.
+    pub runtime_options: RuntimeOptions,
+    /// Whether to clone and retain submitted patches, including failed writes.
+    ///
+    /// Defaults to `true`. Set to `false` for measurements to skip history
+    /// allocation from the initial render onward. Validation, committed frames,
+    /// scripted output outcomes, and settle reports are unaffected.
+    pub record_patches: bool,
+}
+
+impl Default for TestAppOptions {
+    fn default() -> Self {
+        Self {
+            width_policy: WidthPolicy::Unicode,
+            runtime_options: RuntimeOptions::default(),
+            record_patches: true,
+        }
+    }
+}
+
 /// Reason a deterministic settle operation stopped.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SettleOutcome {
@@ -148,6 +173,9 @@ impl From<ReconcileError> for TestError {
 }
 
 /// Deterministic application-level harness with an in-memory terminal.
+///
+/// Constructors record submitted patches by default. Use [`Self::with_options`]
+/// to disable recording before the initial render, for example in benchmarks.
 pub struct TestApp<A: Application> {
     runner: AppRunner<A>,
     terminal: TerminalSession<MemoryBackend>,
@@ -251,6 +279,44 @@ impl<A: Application> TestApp<A> {
         width_policy: WidthPolicy,
         options: RuntimeOptions,
     ) -> Result<Self, TestError> {
+        Self::try_with_options(
+            application,
+            size,
+            TestAppOptions {
+                width_policy,
+                runtime_options: options,
+                ..TestAppOptions::default()
+            },
+        )
+    }
+
+    /// Creates and initially settles `application` at terminal `size`.
+    ///
+    /// `options` selects width rules, runtime configuration, and patch recording
+    /// before any rendering occurs. Disabling recording also skips cloning the
+    /// initial patch, but retains the committed [`frame`](Self::frame).
+    ///
+    /// Panics with a test diagnostic if initialization fails. Use
+    /// [`Self::try_with_options`] to inspect initialization errors.
+    #[must_use]
+    pub fn with_options(application: A, size: Size, options: TestAppOptions) -> Self {
+        fail_test(Self::try_with_options(application, size, options))
+    }
+
+    /// Fallible variant of [`Self::with_options`].
+    ///
+    /// Initially settles `application` at terminal `size`, with all `options`
+    /// applied before the first render. Returns an error if initialization fails.
+    pub fn try_with_options(
+        application: A,
+        size: Size,
+        options: TestAppOptions,
+    ) -> Result<Self, TestError> {
+        let TestAppOptions {
+            width_policy,
+            runtime_options,
+            record_patches,
+        } = options;
         let clock = ManualClock::default();
         let clock_source: Arc<dyn arborui_runtime::Clock> = Arc::new(clock.clone());
         let runner = AppRunner::new_with_clock_and_options(
@@ -258,14 +324,14 @@ impl<A: Application> TestApp<A> {
             size,
             Renderer::new(size, width_policy),
             clock_source,
-            options,
+            runtime_options,
         );
         let capabilities = Capabilities {
             width_policy,
             ..Capabilities::default()
         };
         let terminal = TerminalSession::open(
-            MemoryBackend::new(size, capabilities),
+            MemoryBackend::new(size, capabilities, record_patches),
             TerminalState::default(),
         )
         .map_err(TestError::Backend)?;
@@ -602,12 +668,19 @@ impl<A: Application> TestApp<A> {
     }
 
     /// Returns every non-empty patch submitted to the in-memory terminal.
+    ///
+    /// Includes validated writes that were deferred, reported unknown state, or
+    /// failed. Always empty when [`TestAppOptions::record_patches`] is `false`;
+    /// the committed [`frame`](Self::frame) remains available in that mode.
     #[must_use]
     pub fn frame_patches(&self) -> &[FramePatch] {
         self.terminal.backend().patches()
     }
 
     /// Returns the most recently submitted non-empty patch.
+    ///
+    /// Returns `None` when [`TestAppOptions::record_patches`] is `false`, even
+    /// after a frame commits. Otherwise includes non-applied or failed writes.
     #[must_use]
     pub fn last_frame_patch(&self) -> Option<&FramePatch> {
         self.frame_patches().last()
