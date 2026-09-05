@@ -16,7 +16,8 @@ use std::{
 use arborui_render::{ImageError as RgbaImageError, MAX_IMAGE_BYTES, RgbaImage};
 use image::{
     ColorType, ConvertColorOptions, DynamicImage, ImageDecoder, ImageError as DecoderError,
-    ImageFormat, ImageReader, Limits, metadata::Cicp,
+    ImageFormat, ImageReader, Limits,
+    metadata::{Cicp, Orientation},
 };
 
 const MAX_DECODED_BYTES: u64 = MAX_IMAGE_BYTES as u64;
@@ -75,6 +76,22 @@ impl DecodeError {
             }
         };
         Self::with_source(kind, "decoded image is invalid", error)
+    }
+
+    fn webp(context: &'static str, error: image_webp::DecodingError) -> Self {
+        let kind = match &error {
+            image_webp::DecodingError::MemoryLimitExceeded
+            | image_webp::DecodingError::ImageTooLarge => DecodeErrorKind::LimitExceeded,
+            image_webp::DecodingError::IoError(error)
+                if error.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                DecodeErrorKind::InvalidData
+            }
+            image_webp::DecodingError::IoError(_) => DecodeErrorKind::Io,
+            image_webp::DecodingError::UnsupportedFeature(_) => DecodeErrorKind::Unsupported,
+            _ => DecodeErrorKind::InvalidData,
+        };
+        Self::with_source(kind, context, error)
     }
 
     fn with_source(
@@ -150,26 +167,56 @@ where
     limits.max_alloc = Some(MAX_DECODED_BYTES);
     reader.limits(limits);
 
-    let mut decoder = reader
-        .into_decoder()
-        .map_err(|error| DecodeError::decoder("failed to initialize image decoder", error))?;
-    let (width, height) = decoder.dimensions();
-    validate_output_size(width, height)?;
-    if decoder.total_bytes() > MAX_DECODED_BYTES {
-        return Err(DecodeError::message(
-            DecodeErrorKind::LimitExceeded,
-            format!(
-                "decoder requires {} bytes, exceeding the {MAX_IMAGE_BYTES}-byte limit",
-                decoder.total_bytes()
-            ),
-        ));
-    }
-
-    let orientation = decoder
-        .orientation()
-        .map_err(|error| DecodeError::decoder("failed to read image orientation", error))?;
-    let mut decoded = DynamicImage::from_decoder(decoder)
-        .map_err(|error| DecodeError::decoder("failed to decode image pixels", error))?;
+    let (mut decoded, orientation) = if reader.format() == Some(ImageFormat::WebP) {
+        // image 0.25.8 does not forward max_alloc to WebP. Configure the codec
+        // directly so every EXIF range is bounded before metadata allocation.
+        let mut decoder = image_webp::WebPDecoder::new(reader.into_inner())
+            .map_err(|error| DecodeError::webp("failed to initialize WebP decoder", error))?;
+        decoder.set_memory_limit(MAX_IMAGE_BYTES);
+        let (width, height) = decoder.dimensions();
+        validate_output_size(width, height)?;
+        let orientation = decoder
+            .exif_metadata()
+            .map_err(|error| DecodeError::webp("failed to read WebP orientation", error))?
+            .as_deref()
+            .and_then(Orientation::from_exif_chunk)
+            .unwrap_or(Orientation::NoTransforms);
+        let decoded = if decoder.has_alpha() {
+            let mut pixels = image::RgbaImage::new(width, height);
+            decoder
+                .read_image(&mut pixels)
+                .map_err(|error| DecodeError::webp("failed to decode WebP pixels", error))?;
+            DynamicImage::ImageRgba8(pixels)
+        } else {
+            let mut pixels = image::RgbImage::new(width, height);
+            decoder
+                .read_image(&mut pixels)
+                .map_err(|error| DecodeError::webp("failed to decode WebP pixels", error))?;
+            DynamicImage::ImageRgb8(pixels)
+        };
+        (decoded, orientation)
+    } else {
+        let mut decoder = reader
+            .into_decoder()
+            .map_err(|error| DecodeError::decoder("failed to initialize image decoder", error))?;
+        let (width, height) = decoder.dimensions();
+        validate_output_size(width, height)?;
+        if decoder.total_bytes() > MAX_DECODED_BYTES {
+            return Err(DecodeError::message(
+                DecodeErrorKind::LimitExceeded,
+                format!(
+                    "decoder requires {} bytes, exceeding the {MAX_IMAGE_BYTES}-byte limit",
+                    decoder.total_bytes()
+                ),
+            ));
+        }
+        let orientation = decoder
+            .orientation()
+            .map_err(|error| DecodeError::decoder("failed to read image orientation", error))?;
+        let decoded = DynamicImage::from_decoder(decoder)
+            .map_err(|error| DecodeError::decoder("failed to decode image pixels", error))?;
+        (decoded, orientation)
+    };
     decoded.apply_orientation(orientation);
     decoded
         .convert_color_space(Cicp::SRGB, ConvertColorOptions::default(), ColorType::Rgba8)
@@ -349,6 +396,182 @@ mod tests {
     }
 
     #[test]
+    fn webp_preserves_rgb_rgba_and_bounded_orientation() -> Result<(), Box<dyn Error>> {
+        use image::{ExtendedColorType, ImageEncoder};
+
+        for color in [ExtendedColorType::Rgb8, ExtendedColorType::Rgba8] {
+            let pixels = if color == ExtendedColorType::Rgb8 {
+                vec![10, 20, 30, 200, 180, 160]
+            } else {
+                vec![10, 20, 30, 40, 200, 180, 160, 255]
+            };
+            for oriented in [false, true] {
+                let mut encoded = Vec::new();
+                let mut encoder = image::codecs::webp::WebPEncoder::new_lossless(&mut encoded);
+                if oriented {
+                    encoder.set_exif_metadata(exif_orientation())?;
+                }
+                encoder.encode(&pixels, 2, 1, color)?;
+
+                let decoded = decode(&encoded)?;
+
+                assert_eq!(
+                    (decoded.width(), decoded.height()),
+                    if oriented { (1, 2) } else { (2, 1) }
+                );
+                assert_eq!(
+                    decoded.pixels(),
+                    [
+                        10,
+                        20,
+                        30,
+                        if color == ExtendedColorType::Rgb8 {
+                            255
+                        } else {
+                            40
+                        },
+                        200,
+                        180,
+                        160,
+                        255
+                    ]
+                );
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn animated_webp_uses_its_first_frame() -> Result<(), Box<dyn Error>> {
+        let mut encoded = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0".to_vec();
+        encoded.extend_from_slice(&[2, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        encoded.extend_from_slice(b"ANIM\x06\0\0\0\0\0\0\0\0\0");
+        for pixel in [[255, 0, 0], [0, 0, 255]] {
+            let mut frame = Vec::new();
+            image::codecs::webp::WebPEncoder::new_lossless(&mut frame).encode(
+                &pixel,
+                1,
+                1,
+                image::ExtendedColorType::Rgb8,
+            )?;
+            let chunk = &frame[12..];
+            encoded.extend_from_slice(b"ANMF");
+            encoded.extend_from_slice(&u32::try_from(16 + chunk.len())?.to_le_bytes());
+            // No-blend frames keep this exact-pixel test independent of blending rounding.
+            encoded.extend_from_slice(&[0; 15]);
+            encoded.push(2);
+            encoded.extend_from_slice(chunk);
+        }
+        let riff_size = u32::try_from(encoded.len() - 8)?;
+        encoded[4..8].copy_from_slice(&riff_size.to_le_bytes());
+
+        let decoded = decode(&encoded)?;
+
+        assert_eq!((decoded.width(), decoded.height()), (1, 1));
+        assert_eq!(decoded.pixels(), [255, 0, 0, 255]);
+        Ok(())
+    }
+
+    #[test]
+    fn oversized_webp_exif_is_rejected_before_metadata_allocation() {
+        for nested in [false, true] {
+            let bytes = oversized_webp_exif(nested);
+            let mut source = MetadataReadGuard::new(&bytes);
+
+            let error = decode_reader(&mut source).expect_err("oversized EXIF must fail");
+
+            assert!(
+                !source.metadata_read_reached,
+                "WebP metadata allocation path was reached (nested={nested})"
+            );
+            assert_eq!(error.kind(), DecodeErrorKind::LimitExceeded);
+        }
+    }
+
+    #[test]
+    fn webp_exif_guard_stops_the_unlimited_decoder_before_allocation() -> Result<(), Box<dyn Error>>
+    {
+        for nested in [false, true] {
+            let bytes = oversized_webp_exif(nested);
+            let mut source = MetadataReadGuard::new(&bytes);
+            let mut decoder = image::codecs::webp::WebPDecoder::new(&mut source)?;
+
+            let error = decoder
+                .orientation()
+                .expect_err("guard must stop EXIF reading");
+
+            assert!(matches!(error, DecoderError::IoError(_)));
+            assert!(source.metadata_read_reached);
+        }
+        Ok(())
+    }
+
+    fn oversized_webp_exif(nested: bool) -> Vec<u8> {
+        let length = u32::try_from(MAX_IMAGE_BYTES + 1).expect("image limit fits u32");
+        let mut bytes = b"RIFF\0\0\0\0WEBPVP8X\x0a\0\0\0".to_vec();
+        bytes.extend_from_slice(&[if nested { 2 } else { 8 }, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        if nested {
+            // The pinned decoder can mistake the first frame's VP8L payload for
+            // a second chunk header and import its EXIF range into image metadata.
+            bytes.extend_from_slice(b"ANIM\x06\0\0\0\0\0\0\0\0\0ANMF\x28\0\0\0");
+            bytes.extend_from_slice(&[0; 16]);
+            bytes.extend_from_slice(b"VP8L\x08\0\0\0EXIF");
+            bytes.extend_from_slice(&length.to_le_bytes());
+            bytes.extend_from_slice(b"JUNK\0\0\0\0");
+            assert_eq!(bytes.len(), 92);
+        } else {
+            bytes.extend_from_slice(b"VP8L\0\0\0\0EXIF");
+            bytes.extend_from_slice(&length.to_le_bytes());
+            assert_eq!(bytes.len(), 46);
+        }
+        let riff_size = u32::try_from(bytes.len() - 8).expect("fixture size fits u32");
+        bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+        bytes
+    }
+
+    struct MetadataReadGuard<'a> {
+        source: Cursor<&'a [u8]>,
+        metadata_read_reached: bool,
+    }
+
+    impl<'a> MetadataReadGuard<'a> {
+        fn new(bytes: &'a [u8]) -> Self {
+            Self {
+                source: Cursor::new(bytes),
+                metadata_read_reached: false,
+            }
+        }
+    }
+
+    impl Read for MetadataReadGuard<'_> {
+        fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+            self.source.read(buffer)
+        }
+    }
+
+    impl BufRead for MetadataReadGuard<'_> {
+        fn fill_buf(&mut self) -> std::io::Result<&[u8]> {
+            self.source.fill_buf()
+        }
+
+        fn consume(&mut self, amount: usize) {
+            self.source.consume(amount);
+        }
+    }
+
+    impl Seek for MetadataReadGuard<'_> {
+        fn seek(&mut self, position: SeekFrom) -> std::io::Result<u64> {
+            // image-webp 0.2.4 seeks to metadata before allocating its declared
+            // length. Stop there so this regression never makes a large allocation.
+            if position == SeekFrom::Start(self.source.get_ref().len() as u64) {
+                self.metadata_read_reached = true;
+                return Err(std::io::Error::other("blocked metadata allocation path"));
+            }
+            self.source.seek(position)
+        }
+    }
+
+    #[test]
     fn load_detects_contents_without_a_matching_extension() -> Result<(), Box<dyn Error>> {
         let path = TemporaryImage::write(&encode(ImageFormat::Png)?)?;
 
@@ -392,18 +615,23 @@ mod tests {
         oriented.extend_from_slice(&encoded[..2]);
         oriented.extend_from_slice(&[0xff, 0xe1, 0x00, 0x22]);
         oriented.extend_from_slice(b"Exif\0\0");
-        oriented.extend_from_slice(b"II");
-        oriented.extend_from_slice(&42_u16.to_le_bytes());
-        oriented.extend_from_slice(&8_u32.to_le_bytes());
-        oriented.extend_from_slice(&1_u16.to_le_bytes());
-        oriented.extend_from_slice(&0x0112_u16.to_le_bytes());
-        oriented.extend_from_slice(&3_u16.to_le_bytes());
-        oriented.extend_from_slice(&1_u32.to_le_bytes());
-        oriented.extend_from_slice(&6_u16.to_le_bytes());
-        oriented.extend_from_slice(&0_u16.to_le_bytes());
-        oriented.extend_from_slice(&0_u32.to_le_bytes());
+        oriented.extend_from_slice(&exif_orientation());
         oriented.extend_from_slice(&encoded[2..]);
         oriented
+    }
+
+    fn exif_orientation() -> Vec<u8> {
+        let mut exif = b"II".to_vec();
+        exif.extend_from_slice(&42_u16.to_le_bytes());
+        exif.extend_from_slice(&8_u32.to_le_bytes());
+        exif.extend_from_slice(&1_u16.to_le_bytes());
+        exif.extend_from_slice(&0x0112_u16.to_le_bytes());
+        exif.extend_from_slice(&3_u16.to_le_bytes());
+        exif.extend_from_slice(&1_u32.to_le_bytes());
+        exif.extend_from_slice(&6_u16.to_le_bytes());
+        exif.extend_from_slice(&0_u16.to_le_bytes());
+        exif.extend_from_slice(&0_u32.to_le_bytes());
+        exif
     }
 
     struct TemporaryImage(PathBuf);
