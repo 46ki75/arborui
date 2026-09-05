@@ -834,7 +834,8 @@ impl<A: Application> AppRunner<A> {
                     .map_err(|error| RuntimeError::Ui(UiError::Reconcile(error)))?;
                 continue;
             }
-            if process.budget_exhausted {
+            // Post-commit focus and hover handlers can queue messages or another frame.
+            if process.budget_exhausted || !self.is_visually_idle() {
                 if let Some(event) = session
                     .poll_event(Duration::ZERO)
                     .map_err(RuntimeError::Backend)?
@@ -1482,6 +1483,8 @@ mod tests {
         outcomes: VecDeque<WriteOutcome>,
         events: VecDeque<TerminalEvent>,
         patches: Vec<FramePatch>,
+        poll_timeouts: Vec<Duration>,
+        poll_limit: Option<usize>,
         fail_next_poll: bool,
         fail_next_write: bool,
     }
@@ -1499,6 +1502,8 @@ mod tests {
                 outcomes: outcomes.into_iter().collect(),
                 events: VecDeque::new(),
                 patches: Vec::new(),
+                poll_timeouts: Vec::new(),
+                poll_limit: None,
                 fail_next_poll: false,
                 fail_next_write: false,
             }));
@@ -1523,8 +1528,15 @@ mod tests {
             &self.capabilities
         }
 
-        fn poll_event(&mut self, _timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
+        fn poll_event(&mut self, timeout: Duration) -> Result<Option<TerminalEvent>, Self::Error> {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            state.poll_timeouts.push(timeout);
+            if state
+                .poll_limit
+                .is_some_and(|limit| state.poll_timeouts.len() > limit)
+            {
+                return Err(io::Error::other("fake backend poll limit exceeded"));
+            }
             if std::mem::take(&mut state.fail_next_poll) {
                 return Err(io::Error::other("injected poll failure"));
             }
@@ -2500,4 +2512,6 @@ mod tests {
         assert_eq!(closed.kind(), crate::EventProxySendErrorKind::Closed);
         Ok(())
     }
+
+    mod post_commit;
 }
