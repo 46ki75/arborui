@@ -293,6 +293,211 @@ impl Application for DuplicateKeyApp {
 }
 
 #[test]
+fn constructors_record_initial_patches_by_default() -> Result<(), TestError> {
+    let size = Size::new(4, 2);
+    let apps = [
+        TestApp::new(Counter::default(), size),
+        TestApp::try_new(Counter::default(), size)?,
+        TestApp::with_width_policy(Counter::default(), size, WidthPolicy::Unicode),
+        TestApp::try_with_width_policy(Counter::default(), size, WidthPolicy::Unicode)?,
+        TestApp::with_runtime_options(Counter::default(), size, RuntimeOptions::default()),
+        TestApp::try_with_runtime_options(Counter::default(), size, RuntimeOptions::default())?,
+        TestApp::with_width_policy_and_runtime_options(
+            Counter::default(),
+            size,
+            WidthPolicy::Unicode,
+            RuntimeOptions::default(),
+        ),
+        TestApp::try_with_width_policy_and_runtime_options(
+            Counter::default(),
+            size,
+            WidthPolicy::Unicode,
+            RuntimeOptions::default(),
+        )?,
+        TestApp::with_options(Counter::default(), size, TestAppOptions::default()),
+        TestApp::try_with_options(Counter::default(), size, TestAppOptions::default())?,
+    ];
+    for app in apps {
+        assert_eq!(app.frame_patches().len(), 1);
+        assert!(
+            app.last_frame_patch()
+                .is_some_and(|patch| patch.full_repaint)
+        );
+        assert_eq!(app.frame().characters(), "0   \nadd ");
+    }
+    Ok(())
+}
+
+#[test]
+fn nonrecording_preserves_configuration_frames_and_settle_reports() {
+    for width_policy in [WidthPolicy::Unicode, WidthPolicy::Cjk, WidthPolicy::WcWidth] {
+        let runtime_options = RuntimeOptions::new()
+            .with_event_ingress_capacity(NonZeroUsize::MIN)
+            .with_interrupt(InterruptPolicy::Ignore);
+        let counter = || Counter {
+            label: "\u{b7}".to_owned(),
+            ..Counter::default()
+        };
+        let mut recording = TestApp::with_width_policy_and_runtime_options(
+            counter(),
+            Size::new(4, 2),
+            width_policy,
+            runtime_options,
+        );
+        let mut nonrecording = TestApp::try_with_options(
+            counter(),
+            Size::new(4, 2),
+            TestAppOptions {
+                width_policy,
+                runtime_options,
+                record_patches: false,
+            },
+        )
+        .expect("nonrecording initialization must settle");
+        assert_eq!(recording.frame(), nonrecording.frame());
+        assert!(nonrecording.frame_patches().is_empty());
+        assert!(nonrecording.last_frame_patch().is_none());
+        for outcome in [
+            SettleOutcome::Deferred,
+            SettleOutcome::StateUnknown,
+            SettleOutcome::Settled,
+        ] {
+            for app in [&mut recording, &mut nonrecording] {
+                match outcome {
+                    SettleOutcome::Deferred => app.defer_next_output(),
+                    SettleOutcome::StateUnknown => app.make_next_output_unknown(),
+                    _ => {}
+                }
+                let proxy = app.event_proxy();
+                assert!(proxy.send(Message::Increment).is_ok());
+                assert_eq!(
+                    proxy
+                        .send(Message::Increment)
+                        .expect_err("capacity one")
+                        .kind(),
+                    EventProxySendErrorKind::Full
+                );
+            }
+            let expected = recording.settle();
+            assert_eq!(expected.outcome, outcome);
+            assert_eq!(expected.updates, 1);
+            assert_eq!(nonrecording.settle(), expected);
+            assert_eq!(recording.frame(), nonrecording.frame());
+            assert_eq!(recording.settle(), nonrecording.settle());
+            assert_eq!(recording.frame(), nonrecording.frame());
+        }
+        for app in [&mut recording, &mut nonrecording] {
+            app.fail_next_output();
+            assert!(matches!(
+                app.try_send(Message::Increment),
+                Err(TestError::Backend(TestBackendError))
+            ));
+        }
+        assert_eq!(recording.frame(), nonrecording.frame());
+        assert_eq!(recording.settle(), nonrecording.settle());
+        assert_eq!(
+            recording.resize(Size::new(6, 3)),
+            nonrecording.resize(Size::new(6, 3))
+        );
+        assert_eq!(
+            recording.send(Message::StartTimer),
+            nonrecording.send(Message::StartTimer)
+        );
+        assert_eq!(
+            recording.advance(Duration::from_secs(2)),
+            nonrecording.advance(Duration::from_secs(2))
+        );
+        assert_eq!(
+            recording.key_with(
+                KeyCode::Character('c'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Press
+            ),
+            nonrecording.key_with(
+                KeyCode::Character('c'),
+                KeyModifiers::CONTROL,
+                KeyEventKind::Press
+            )
+        );
+        assert!(!nonrecording.is_quitting());
+        assert_eq!(recording.frame(), nonrecording.frame());
+        assert_eq!(
+            recording.application().count,
+            nonrecording.application().count
+        );
+        for app in [&recording, &nonrecording] {
+            let metrics = app.event_proxy().metrics();
+            // Ingress latency uses wall time; only counters are deterministic.
+            assert_eq!(
+                (metrics.capacity, metrics.depth, metrics.high_water_mark),
+                (1, 0, 1)
+            );
+            assert_eq!(
+                (metrics.accepted, metrics.dequeued, metrics.rejected),
+                (3, 3, 3)
+            );
+            assert!(!metrics.closed);
+        }
+        assert!(nonrecording.frame_patches().is_empty());
+        assert!(nonrecording.last_frame_patch().is_none());
+    }
+}
+
+#[test]
+fn nonrecording_recovery_dispatches_exactly_once() {
+    for external_settle in [false, true] {
+        let mut recording = TestApp::new(RecoveryOutputApp::default(), Size::new(1, 1));
+        let mut nonrecording = TestApp::with_options(
+            RecoveryOutputApp::default(),
+            Size::new(1, 1),
+            TestAppOptions {
+                record_patches: false,
+                ..TestAppOptions::default()
+            },
+        );
+        let event = UiEvent::Key(UiKeyEvent {
+            key: UiKey::Enter,
+            modifiers: UiKeyModifiers::NONE,
+            action: KeyAction::Press,
+        });
+        for app in [&mut recording, &mut nonrecording] {
+            app.key(KeyCode::Tab);
+            app.application_mut().rekeyed = true;
+            for _ in 0..3 {
+                app.fail_next_output();
+                assert!(matches!(
+                    app.try_event(event.clone()),
+                    Err(TestError::Backend(TestBackendError))
+                ));
+                assert_eq!(app.application().handler_calls.get(), 1);
+                assert_eq!(app.application().activations, 1);
+                assert_eq!(app.frame().characters(), "0");
+                assert!(matches!(
+                    app.try_event(UiEvent::Resize(Size::new(2, 1))),
+                    Err(TestError::RecoveryEventMismatch { .. })
+                ));
+            }
+        }
+        if external_settle {
+            assert_eq!(recording.settle(), nonrecording.settle());
+        }
+        let (dispatch, settle) = recording.event(event.clone());
+        assert_eq!(nonrecording.event(event.clone()), (dispatch, settle));
+        assert_eq!(dispatch.messages, 1);
+        assert_eq!(settle.updates, 0);
+        assert_eq!(recording.frame(), nonrecording.frame());
+        assert_eq!(nonrecording.application().handler_calls.get(), 1);
+        assert_eq!(nonrecording.application().activations, 1);
+        assert_eq!(nonrecording.frame().characters(), "1");
+        assert_eq!(recording.event(event.clone()), nonrecording.event(event));
+        assert_eq!(nonrecording.application().handler_calls.get(), 2);
+        assert_eq!(nonrecording.application().activations, 2);
+        assert!(nonrecording.frame_patches().is_empty());
+        assert!(nonrecording.last_frame_patch().is_none());
+    }
+}
+
+#[test]
 fn events_render_and_expose_focus_and_patches() {
     let mut app = TestApp::new(Counter::default(), Size::new(4, 2));
 

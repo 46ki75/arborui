@@ -12,7 +12,7 @@ use arborui_example_collection_lab::{
     CollectionLab, CollectionMode, LogAction, LogLab, Message, OverlayAction, OverlayLab,
     TableAction, TableLab, UnicodeAction, UnicodeLab,
 };
-use arborui_test::{KeyCode, Size, TestApp};
+use arborui_test::{KeyCode, Size, TestApp, TestAppOptions};
 use ratatui::{Terminal, backend::TestBackend};
 
 const WIDTH: u16 = 48;
@@ -139,9 +139,10 @@ fn measure_arborui_collection(
             measure(|| CollectionLab::new(mode, item_count, viewport_height(HEIGHT)))
         }
         Scenario::Cold => measure(|| {
-            let application = TestApp::new(
+            let application = TestApp::with_options(
                 CollectionLab::new(mode, item_count, viewport_height(HEIGHT)),
                 base_size(),
+                measurement_options(),
             );
             assert_bounded(application.application().constructed_rows());
             application
@@ -149,7 +150,7 @@ fn measure_arborui_collection(
         Scenario::InitialRender => {
             let model = CollectionLab::new(mode, item_count, viewport_height(HEIGHT));
             measure(move || {
-                let application = TestApp::new(model, base_size());
+                let application = TestApp::with_options(model, base_size(), measurement_options());
                 assert_bounded(application.application().constructed_rows());
                 application
             })
@@ -160,9 +161,10 @@ fn measure_arborui_collection(
         | Scenario::Selection
         | Scenario::Reverse
         | Scenario::UnchangedRedraw => {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 CollectionLab::new(mode, item_count, viewport_height(HEIGHT)),
                 base_size(),
+                measurement_options(),
             );
             if matches!(scenario, Scenario::Selection) {
                 application.send(Message::Down);
@@ -241,14 +243,18 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
     match scenario {
         Scenario::Model => measure(|| TableLab::new(item_count, WIDTH, HEIGHT)),
         Scenario::Cold => measure(|| {
-            let application = TestApp::new(TableLab::new(item_count, WIDTH, HEIGHT), base_size());
+            let application = TestApp::with_options(
+                TableLab::new(item_count, WIDTH, HEIGHT),
+                base_size(),
+                measurement_options(),
+            );
             assert_bounded(application.application().constructed_rows());
             application
         }),
         Scenario::InitialRender => {
             let model = TableLab::new(item_count, WIDTH, HEIGHT);
             measure(move || {
-                let application = TestApp::new(model, base_size());
+                let application = TestApp::with_options(model, base_size(), measurement_options());
                 assert_bounded(application.application().constructed_rows());
                 application
             })
@@ -260,8 +266,11 @@ fn measure_arborui_table(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::UnchangedRedraw
         | Scenario::VisibleUpdate
         | Scenario::OffscreenUpdate => {
-            let mut application =
-                TestApp::new(TableLab::new(item_count, WIDTH, HEIGHT), base_size());
+            let mut application = TestApp::with_options(
+                TableLab::new(item_count, WIDTH, HEIGHT),
+                base_size(),
+                measurement_options(),
+            );
             if matches!(scenario, Scenario::ResizeStorm) {
                 application.send(TableAction::SelectActive);
             }
@@ -338,9 +347,10 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
     match scenario {
         Scenario::Model => measure(|| LogLab::new(item_count, history_limit, WIDTH, HEIGHT)),
         Scenario::Cold => measure(|| {
-            let application = TestApp::new(
+            let application = TestApp::with_options(
                 LogLab::new(item_count, history_limit, WIDTH, HEIGHT),
                 base_size(),
+                measurement_options(),
             );
             assert_bounded(application.application().constructed_rows());
             application
@@ -348,7 +358,7 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
         Scenario::InitialRender => {
             let model = LogLab::new(item_count, history_limit, WIDTH, HEIGHT);
             measure(move || {
-                let application = TestApp::new(model, base_size());
+                let application = TestApp::with_options(model, base_size(), measurement_options());
                 assert_bounded(application.application().constructed_rows());
                 application
             })
@@ -359,9 +369,10 @@ fn measure_arborui_log(scenario: Scenario, item_count: usize) -> Metrics {
         | Scenario::AppendFollowing
         | Scenario::AppendPaused
         | Scenario::UnchangedRedraw => {
-            let mut application = TestApp::new(
+            let mut application = TestApp::with_options(
                 LogLab::new(item_count, history_limit, WIDTH, HEIGHT),
                 base_size(),
+                measurement_options(),
             );
             if matches!(scenario, Scenario::AppendPaused | Scenario::ResizeStorm) {
                 application.send(LogAction::PageUp);
@@ -433,9 +444,10 @@ fn measure_arborui_overlay(scenario: Scenario) -> Metrics {
     match scenario {
         Scenario::Model => measure(|| OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT)),
         Scenario::Cold => measure(|| {
-            let application = TestApp::new(
+            let application = TestApp::with_options(
                 OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
                 overlay_size(),
+                measurement_options(),
             );
             assert_arborui_overlay_bounded(&application);
             application
@@ -443,7 +455,8 @@ fn measure_arborui_overlay(scenario: Scenario) -> Metrics {
         Scenario::InitialRender => {
             let model = OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT);
             measure(move || {
-                let application = TestApp::new(model, overlay_size());
+                let application =
+                    TestApp::with_options(model, overlay_size(), measurement_options());
                 assert_arborui_overlay_bounded(&application);
                 application
             })
@@ -490,9 +503,10 @@ fn measure_arborui_unicode(scenario: Scenario) -> Metrics {
     match scenario {
         Scenario::Model => measure(|| UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT)),
         Scenario::Cold => measure(|| {
-            let application = TestApp::new(
+            let application = TestApp::with_options(
                 UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
                 unicode_size(),
+                measurement_options(),
             );
             assert_arborui_unicode_bounded(&application);
             application
@@ -500,7 +514,8 @@ fn measure_arborui_unicode(scenario: Scenario) -> Metrics {
         Scenario::InitialRender => {
             let model = UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT);
             measure(move || {
-                let application = TestApp::new(model, unicode_size());
+                let application =
+                    TestApp::with_options(model, unicode_size(), measurement_options());
                 assert_arborui_unicode_bounded(&application);
                 application
             })
@@ -1097,6 +1112,13 @@ fn measure_ratatui_unicode(scenario: Scenario) -> Metrics {
     }
 }
 
+fn measurement_options() -> TestAppOptions {
+    TestAppOptions {
+        record_patches: false,
+        ..TestAppOptions::default()
+    }
+}
+
 fn measure<T>(operation: impl FnOnce() -> T) -> Metrics {
     let profiler = dhat::Profiler::builder()
         .testing()
@@ -1131,9 +1153,10 @@ fn ratatui_fixture(
 }
 
 fn arborui_overlay_fixture(scenario: Scenario) -> TestApp<OverlayLab> {
-    let mut application = TestApp::new(
+    let mut application = TestApp::with_options(
         OverlayLab::new(OVERLAY_WIDTH, OVERLAY_HEIGHT),
         overlay_size(),
+        measurement_options(),
     );
     match scenario {
         Scenario::FocusNext
@@ -1190,9 +1213,10 @@ fn ratatui_overlay_fixture(scenario: Scenario) -> (RatatuiOverlayLab, Terminal<T
 }
 
 fn arborui_unicode_fixture(scenario: Scenario) -> TestApp<UnicodeLab> {
-    let mut application = TestApp::new(
+    let mut application = TestApp::with_options(
         UnicodeLab::new(UNICODE_WIDTH, UNICODE_HEIGHT),
         unicode_size(),
+        measurement_options(),
     );
     match scenario {
         Scenario::ShiftBoundary => {
