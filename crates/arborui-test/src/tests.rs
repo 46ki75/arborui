@@ -1,12 +1,12 @@
-use std::{num::NonZeroUsize, time::Duration};
+use std::{cell::Cell, num::NonZeroUsize, time::Duration};
 
 use arborui_core::{Rect, Size};
 use arborui_layout::{Dimension, LayoutStyle};
 use arborui_render::RgbaImage;
 use arborui_runtime::{Application, Command, UpdateContext};
 use arborui_ui::{
-    Element, EventPhase, Invalidation, KeyModifiers as UiKeyModifiers, PointerEvent,
-    PointerEventKind, ReconcileError,
+    Element, EventPhase, Invalidation, KeyAction, KeyModifiers as UiKeyModifiers, PointerEvent,
+    PointerEventKind, ReconcileError, UiKey, UiKeyEvent,
 };
 
 use super::*;
@@ -205,6 +205,66 @@ impl Application for MissedInvalidationApp {
     }
 }
 
+struct RecoveryOutputApp {
+    rekeyed: bool,
+    handler_calls: Cell<usize>,
+    activations: usize,
+    label: String,
+}
+
+impl Default for RecoveryOutputApp {
+    fn default() -> Self {
+        Self {
+            rekeyed: false,
+            handler_calls: Cell::new(0),
+            activations: 0,
+            label: "0".to_owned(),
+        }
+    }
+}
+
+impl Application for RecoveryOutputApp {
+    type Message = ();
+
+    fn update(
+        &mut self,
+        (): Self::Message,
+        context: &mut UpdateContext<Self::Message>,
+    ) -> Command<Self::Message> {
+        self.activations += 1;
+        self.label = self.activations.to_string();
+        context.invalidate(Invalidation::Paint);
+        Command::none()
+    }
+
+    fn view(&self) -> Element<'_, Self::Message> {
+        Element::custom(
+            "button",
+            [Element::text(&self.label).key(if self.rekeyed { "new" } else { "old" })],
+        )
+        .key("activate")
+        .focusable(true)
+        .on_event(EventPhase::Target, |event, context| {
+            if matches!(
+                event,
+                UiEvent::Key(UiKeyEvent {
+                    key: UiKey::Enter,
+                    action: KeyAction::Press,
+                    ..
+                })
+            ) {
+                self.handler_calls.set(self.handler_calls.get() + 1);
+                context.emit(());
+                if self.activations == 0 {
+                    context.mark_handled();
+                    context.prevent_default();
+                    context.stop_propagation();
+                }
+            }
+        })
+    }
+}
+
 struct DuplicateKeyApp {
     invalid: bool,
 }
@@ -367,6 +427,8 @@ fn missed_invalidation_recovery_retains_event_after_output_error() {
         Size::new(3, 1),
     );
     app.send(MissedInvalidationMessage::Expand);
+    app.defer_next_output();
+    app.make_next_output_unknown();
     app.fail_next_output();
     let event = UiEvent::Pointer(PointerEvent {
         kind: PointerEventKind::Moved,
@@ -395,9 +457,208 @@ fn missed_invalidation_recovery_retains_event_after_output_error() {
     assert_eq!(app.application().activations, 1);
     assert_eq!(app.frame().characters(), "new");
     assert_eq!(settle.outcome, SettleOutcome::Settled);
-    assert_eq!(settle.turns, 3);
+    assert_eq!(settle.turns, 5);
     assert_eq!(settle.updates, 1);
     assert_eq!(settle.committed_frames, 0);
+}
+
+#[test]
+fn recovery_output_error_retry_is_exactly_once() {
+    let mut app = TestApp::new(RecoveryOutputApp::default(), Size::new(1, 1));
+    app.key(KeyCode::Tab);
+    assert_eq!(app.focused_key(), Some(Key::from("activate")));
+    let initial = app.frame().clone();
+    let patches = app.frame_patches().len();
+    app.application_mut().rekeyed = true;
+    let event = UiEvent::Key(UiKeyEvent {
+        key: UiKey::Enter,
+        modifiers: UiKeyModifiers::NONE,
+        action: KeyAction::Press,
+    });
+    app.fail_next_output();
+
+    assert!(matches!(
+        app.try_event(event.clone()),
+        Err(TestError::Backend(TestBackendError))
+    ));
+    // The pixel-identical recovery committed without consuming the scripted
+    // failure. The handler and update ran before their visible output failed.
+    assert_eq!(app.application().handler_calls.get(), 1);
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame(), &initial);
+    assert_eq!(app.frame_patches().len(), patches + 1);
+
+    for _ in 0..2 {
+        let patches = app.frame_patches().len();
+        app.fail_next_output();
+        let different = UiEvent::Resize(Size::new(2, 1));
+        assert!(matches!(
+            app.try_event(different.clone()),
+            Err(TestError::RecoveryEventMismatch { pending, received })
+                if pending == event && received == different
+        ));
+        assert_eq!(app.frame_patches().len(), patches);
+        assert!(matches!(
+            app.try_event(event.clone()),
+            Err(TestError::Backend(TestBackendError))
+        ));
+        assert_eq!(app.application().handler_calls.get(), 1);
+        assert_eq!(app.application().activations, 1);
+        assert_eq!(app.frame(), &initial);
+        assert_eq!(app.frame_patches().len(), patches + 1);
+    }
+
+    let (dispatch, settle) = app
+        .try_event(event.clone())
+        .expect("retry must finish settling");
+
+    assert_eq!(app.application().handler_calls.get(), 1);
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame().characters(), "1");
+    assert_eq!(
+        dispatch,
+        DispatchReport {
+            messages: 1,
+            handled: true,
+            default_prevented: true,
+            propagation_stopped: true,
+        }
+    );
+    assert_eq!(settle.outcome, SettleOutcome::Settled);
+    assert_eq!(settle.turns, 2);
+    assert_eq!(settle.updates, 0);
+    assert_eq!(settle.committed_frames, 2);
+    assert_eq!(app.frame().size(), Size::new(1, 1));
+    assert!(
+        app.last_frame_patch()
+            .is_some_and(|patch| patch.full_repaint)
+    );
+
+    let (dispatch, settle) = app.event(event);
+    assert_eq!(app.application().handler_calls.get(), 2);
+    assert_eq!(app.application().activations, 2);
+    assert_eq!(app.frame().characters(), "2");
+    assert_eq!(settle.updates, 1);
+    assert_eq!(dispatch.messages, 1);
+    assert!(!dispatch.handled && !dispatch.default_prevented && !dispatch.propagation_stopped);
+}
+
+#[test]
+fn recovery_output_error_external_settle_then_retry_is_exactly_once() {
+    let mut app = TestApp::new(RecoveryOutputApp::default(), Size::new(1, 1));
+    app.key(KeyCode::Tab);
+    app.application_mut().rekeyed = true;
+    let event = UiEvent::Key(UiKeyEvent {
+        key: UiKey::Enter,
+        modifiers: UiKeyModifiers::NONE,
+        action: KeyAction::Press,
+    });
+    app.fail_next_output();
+
+    assert!(matches!(
+        app.try_event(event.clone()),
+        Err(TestError::Backend(TestBackendError))
+    ));
+    assert_eq!(app.application().handler_calls.get(), 1);
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame().characters(), "0");
+
+    let recovery = app
+        .try_settle()
+        .expect("external settle must repair output");
+    assert_eq!(recovery.outcome, SettleOutcome::Settled);
+    assert_eq!(recovery.updates, 0);
+    assert_eq!(recovery.committed_frames, 1);
+    assert_eq!(app.frame().characters(), "1");
+
+    let patches = app.frame_patches().len();
+    let different = UiEvent::Resize(Size::new(2, 1));
+    assert!(matches!(
+        app.try_event(different.clone()),
+        Err(TestError::RecoveryEventMismatch { pending, received })
+            if pending == event && received == different
+    ));
+    assert_eq!(app.frame_patches().len(), patches);
+    assert_eq!(app.frame().size(), Size::new(1, 1));
+
+    let (dispatch, settle) = app
+        .try_event(event.clone())
+        .expect("retry must acknowledge dispatch");
+
+    assert_eq!(app.application().handler_calls.get(), 1);
+    assert_eq!(app.application().activations, 1);
+    assert_eq!(app.frame().characters(), "1");
+    assert_eq!(
+        dispatch,
+        DispatchReport {
+            messages: 1,
+            handled: true,
+            default_prevented: true,
+            propagation_stopped: true,
+        }
+    );
+    assert_eq!(settle.outcome, SettleOutcome::Settled);
+    assert_eq!(settle.turns, 2);
+    assert_eq!(settle.updates, 0);
+    assert_eq!(settle.committed_frames, 1);
+    assert_eq!(app.frame_patches().len(), patches);
+
+    app.event(event);
+    assert_eq!(app.application().handler_calls.get(), 2);
+    assert_eq!(app.application().activations, 2);
+    assert_eq!(app.frame().characters(), "2");
+    assert_eq!(app.frame().size(), Size::new(1, 1));
+}
+
+#[test]
+fn recovery_post_dispatch_non_applied_output_acknowledges_event() {
+    for outcome in [SettleOutcome::Deferred, SettleOutcome::StateUnknown] {
+        for retry_after_error in [false, true] {
+            let mut app = TestApp::new(RecoveryOutputApp::default(), Size::new(1, 1));
+            app.key(KeyCode::Tab);
+            app.application_mut().rekeyed = true;
+            let event = UiEvent::Key(UiKeyEvent {
+                key: UiKey::Enter,
+                modifiers: UiKeyModifiers::NONE,
+                action: KeyAction::Press,
+            });
+            if retry_after_error {
+                app.fail_next_output();
+                assert!(matches!(
+                    app.try_event(event.clone()),
+                    Err(TestError::Backend(TestBackendError))
+                ));
+                assert_eq!(app.application().handler_calls.get(), 1);
+                assert_eq!(app.application().activations, 1);
+            }
+            if outcome == SettleOutcome::Deferred {
+                app.defer_next_output();
+            } else {
+                app.make_next_output_unknown();
+            }
+
+            let (dispatch, settle) = app
+                .try_event(event.clone())
+                .expect("non-applied output must return successful reports");
+
+            assert_eq!(dispatch.messages, 1);
+            assert!(dispatch.handled && dispatch.default_prevented && dispatch.propagation_stopped);
+            assert_eq!(app.application().handler_calls.get(), 1);
+            assert_eq!(app.application().activations, 1);
+            assert_eq!(app.frame().characters(), "0");
+            assert_eq!(settle.outcome, outcome);
+            assert_eq!(settle.turns, 2);
+            assert_eq!(settle.updates, usize::from(!retry_after_error));
+            assert_eq!(settle.committed_frames, 1);
+
+            app.settle();
+            assert_eq!(app.frame().characters(), "1");
+            app.event(event);
+            assert_eq!(app.application().handler_calls.get(), 2);
+            assert_eq!(app.application().activations, 2);
+            assert_eq!(app.frame().characters(), "2");
+        }
+    }
 }
 
 #[test]
@@ -421,21 +682,26 @@ fn missed_invalidation_recovery_rejects_a_different_event() {
         Err(TestError::Backend(TestBackendError))
     ));
 
-    let different = app.try_event(UiEvent::TerminalFocusGained);
+    let different = UiEvent::Resize(Size::new(6, 1));
+    let patches = app.frame_patches().len();
+    let rejected = app.try_event(different.clone());
 
     assert!(matches!(
-        different,
+        rejected,
         Err(TestError::RecoveryEventMismatch {
             pending: retained,
-            received: UiEvent::TerminalFocusGained,
-        }) if retained == pending
+            received,
+        }) if retained == pending && received == different
     ));
     assert_eq!(app.application().activations, 0);
+    assert_eq!(app.frame_patches().len(), patches);
+    assert_eq!(app.frame().characters(), "old");
 
     let retry = app.try_event(pending);
     assert!(retry.is_ok());
     assert_eq!(app.application().activations, 1);
     assert_eq!(app.frame().characters(), "new");
+    assert_eq!(app.frame().size(), Size::new(3, 1));
 }
 
 #[test]
