@@ -26,7 +26,8 @@ const PANIC_FIXTURE_ENV: &str = "ARBORUI_PTY_PANIC_FIXTURE";
 const ACTIVE_MARKER: &str = "ARBORUI_PTY_ACTIVE";
 const RESTORED_MARKER: &str = "ARBORUI_PTY_RESTORED";
 const PANIC_MARKER: &str = "ARBORUI_PTY_PANIC";
-const PANIC_REPORT_PREFIX: &str = "arborui: terminal restored after panic: ";
+// ConPTY can represent the following blank with erase/cursor commands instead.
+const PANIC_REPORT_PREFIX: &str = "arborui: terminal restored after panic:";
 
 struct PanicApp;
 
@@ -431,16 +432,62 @@ fn restores_before_reporting_panic_in_native_pty() -> Result<(), Box<dyn Error>>
         !status.success(),
         "panic fixture unexpectedly passed: {output_text}"
     );
+    assert_panic_report_after_restore(&output)?;
+    Ok(())
+}
+
+#[test]
+fn panic_oracle_accepts_conpty_redraw() -> Result<(), Box<dyn Error>> {
+    // Reduced from the Windows capture linked in issue #55. ConPTY erases the
+    // trailing blank after the colon and positions the cursor before the payload.
+    let output = concat!(
+        "\x1b[?1049hARBORUI_PTY_PANIC\x1b[K\r\n",
+        "\x1b[?1049l\x1b[0 q\x1b[H\x1b[K\r\n",
+        "running 1 test\x1b[K\r\n",
+        "arborui: terminal restored after panic:\x1b[K\r\n",
+        "\x1b[K\x1b[3;41H\x1b[?25h\x1b[?25l\x1b[?9001l\x1b[?1004l",
+        "\"ARBORUI_PTY_PANIC\"\r\n",
+    );
+    assert_panic_report_after_restore(output.as_bytes())
+}
+
+#[test]
+fn panic_oracle_accepts_literal_diagnostic() -> Result<(), Box<dyn Error>> {
+    assert_panic_report_after_restore(
+        concat!(
+            "\x1b[?1049h\x1b[?1049l",
+            "arborui: terminal restored after panic: \"ARBORUI_PTY_PANIC\"\r\n",
+        )
+        .as_bytes(),
+    )
+}
+
+#[test]
+fn panic_oracle_rejects_missing_or_premature_diagnostic() {
+    for output in [
+        "\x1b[?1049h\x1b[?1049lARBORUI_PTY_PANIC",
+        "\x1b[?1049h\x1b[?1049larborui: terminal restored after panic: ",
+        "\x1b[?1049harborui: terminal restored after panic: ARBORUI_PTY_PANIC",
+        "\x1b[?1049harborui: terminal restored after panic: \x1b[?1049lARBORUI_PTY_PANIC",
+        "\x1b[?1049hARBORUI_PTY_PANIC\x1b[?1049larborui: terminal restored after panic: ",
+    ] {
+        assert!(
+            assert_panic_report_after_restore(output.as_bytes()).is_err(),
+            "invalid panic report accepted: {output:?}",
+        );
+    }
+}
+
+fn assert_panic_report_after_restore(output: &[u8]) -> Result<(), Box<dyn Error>> {
     assert_in_order(
-        &output,
+        output,
         &[
             b"\x1b[?1049h",
             b"\x1b[?1049l",
             PANIC_REPORT_PREFIX.as_bytes(),
             PANIC_MARKER.as_bytes(),
         ],
-    )?;
-    Ok(())
+    )
 }
 
 fn capture_pty_output(
