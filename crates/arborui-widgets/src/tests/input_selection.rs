@@ -1,4 +1,5 @@
 use super::*;
+use arborui_core::{Insets, Rect};
 use arborui_layout::{Align, FlexDirection, Justify};
 use arborui_render::CellContent;
 
@@ -256,55 +257,206 @@ fn selection_clips_wide_spans_without_highlighting_the_spare_cursor_cell()
                 (true, &["a", wide, "~", emoji, "~", "b", ""], 6),
             ]
         };
-        for &(backward, expected, selected_columns) in cases {
-            let size = Size::new(u16::try_from(expected.len())?, 1);
-            let buffer = TextBuffer::new(format!("a{wide}{emoji}b"));
-            let view = TextInput::new(&buffer, |updated| updated).build();
-            let mut tree = UiTree::new();
-            let mut renderer = Renderer::new(size, policy);
-            prepare_and_commit(&mut tree, &view, size, &mut renderer)?;
-            let event = if backward {
-                key(UiKey::Home, KeyModifiers::SHIFT)
-            } else {
-                key(UiKey::Character('a'), KeyModifiers::CONTROL)
-            };
-            let outcome = tree.dispatch(&view, &event, &renderer)?;
-            let selected = outcome
-                .messages
-                .into_iter()
-                .next()
-                .ok_or("missing selection update")?;
-            assert_eq!(
-                selected.selection().map(|s| s.byte_range()),
-                Some(0..buffer.text().len())
-            );
-            assert_eq!(buffer.selection(), None);
-            let view = TextInput::new(&selected, |updated| updated).build();
-            let frame = tree.prepare(&view, size, &mut renderer)?;
-            tree.commit(frame, &mut renderer)?;
+        for direction in [
+            FlexDirection::Row,
+            FlexDirection::Column,
+            FlexDirection::ColumnReverse,
+        ] {
+            for inset in [0, 1] {
+                for &(backward, expected, selected_columns) in cases {
+                    let content = Rect::new(
+                        i32::from(inset * 2),
+                        i32::from(inset * 2),
+                        u16::try_from(expected.len())?,
+                        1,
+                    );
+                    let size = Size::new(content.width + inset * 4, 1 + inset * 4);
+                    let layout = LayoutStyle {
+                        direction,
+                        align: Align::Stretch,
+                        ..LayoutStyle::new()
+                            .size(Dimension::cells(size.width), Dimension::cells(size.height))
+                            .padding(Insets::all(inset))
+                            .border(Insets::all(inset))
+                    };
+                    let buffer = TextBuffer::new(format!("a{wide}{emoji}b"));
+                    let view = TextInput::new(&buffer, |updated| updated)
+                        .layout(layout)
+                        .build();
+                    let mut tree = UiTree::new();
+                    let mut renderer = Renderer::new(size, policy);
+                    prepare_and_commit(&mut tree, &view, size, &mut renderer)?;
+                    let event = if backward {
+                        key(UiKey::Home, KeyModifiers::SHIFT)
+                    } else {
+                        key(UiKey::Character('a'), KeyModifiers::CONTROL)
+                    };
+                    let outcome = tree.dispatch(&view, &event, &renderer)?;
+                    let selected = outcome
+                        .messages
+                        .into_iter()
+                        .next()
+                        .ok_or("missing selection update")?;
+                    assert_eq!(
+                        selected.selection().map(|s| s.byte_range()),
+                        Some(0..buffer.text().len())
+                    );
+                    assert_eq!(buffer.selection(), None);
+                    let view = TextInput::new(&selected, |updated| updated)
+                        .layout(layout)
+                        .build();
+                    let frame = tree.prepare(&view, size, &mut renderer)?;
+                    tree.commit(frame, &mut renderer)?;
 
-            // Commit newly visible graphemes before comparison so IDs are shared.
-            // Force a physical repaint so every grapheme is available by value.
-            renderer.invalidate();
-            let full = tree.prepare_full(&view, size, &mut renderer)?;
-            assert_eq!(renderer.current(), full.buffer());
-            full.patch().validate_for_width_policy(policy)?;
-            for (x, expected) in expected.iter().enumerate() {
-                let point = Point::new(i32::try_from(x)?, 0);
-                let cell = full.buffer().get(point).ok_or("missing cell")?;
-                assert_eq!(
-                    cell.style.modifiers.contains(Modifier::REVERSED),
-                    x < selected_columns,
-                    "{policy:?}, backward={backward}, width={}, x={x}",
-                    size.width
-                );
-                match *expected {
-                    "" => assert_eq!(cell.content, CellContent::Empty),
-                    "~" => assert!(matches!(cell.content, CellContent::Continuation { .. })),
-                    text => assert_eq!(patch_grapheme(full.patch(), point), Some(text)),
+                    // Commit newly visible graphemes before comparison so IDs are shared.
+                    // Force a physical repaint so every grapheme is available by value.
+                    renderer.invalidate();
+                    let full = tree.prepare_full(&view, size, &mut renderer)?;
+                    assert_eq!(renderer.current(), full.buffer());
+                    full.patch().validate_for_width_policy(policy)?;
+                    for (x, expected) in expected.iter().enumerate() {
+                        let point = content.origin().translated(i32::try_from(x)?, 0);
+                        let cell = full.buffer().get(point).ok_or("missing cell")?;
+                        let context = format!(
+                            "{policy:?}, {direction:?}, inset={inset}, backward={backward}, {point:?}"
+                        );
+                        assert_eq!(
+                            cell.style.modifiers.contains(Modifier::REVERSED),
+                            x < selected_columns,
+                            "{context}"
+                        );
+                        match *expected {
+                            "" => assert_eq!(cell.content, CellContent::Empty),
+                            "~" => {
+                                assert!(matches!(cell.content, CellContent::Continuation { .. }))
+                            }
+                            text => assert_eq!(patch_grapheme(full.patch(), point), Some(text)),
+                        }
+                    }
+                    for y in 0..i32::from(size.height) {
+                        for x in 0..i32::from(size.width) {
+                            let point = Point::new(x, y);
+                            if !content.contains(point) {
+                                let cell = full.buffer().get(point).ok_or("missing inset cell")?;
+                                assert_eq!(cell.content, CellContent::Empty);
+                                assert_eq!(cell.style, Style::DEFAULT);
+                            }
+                        }
+                    }
+                    tree.discard(full, &mut renderer);
                 }
             }
-            tree.discard(full, &mut renderer);
+        }
+    }
+    Ok(())
+}
+
+#[test]
+fn stretched_input_scrolls_only_after_controlled_updates() -> Result<(), Box<dyn Error>> {
+    let size = Size::new(4, 1);
+    for direction in [
+        FlexDirection::Row,
+        FlexDirection::Column,
+        FlexDirection::ColumnReverse,
+    ] {
+        let layout = LayoutStyle {
+            direction,
+            align: Align::Stretch,
+            ..LayoutStyle::new().size(Dimension::cells(4), Dimension::cells(1))
+        };
+        let mut buffer = TextBuffer::new("abcdefghij");
+        let mut tree = UiTree::new();
+        let mut renderer = Renderer::new(size, WidthPolicy::Unicode);
+        let mut row = vec![String::from(" "); 4];
+        let mut identities = None;
+        for (event, expected, cursor, selected_columns) in [
+            (None, "hij ", 3, 0),
+            (Some(key(UiKey::Home, KeyModifiers::NONE)), "abcd", 0, 0),
+            (Some(key(UiKey::Right, KeyModifiers::SHIFT)), "abcd", 1, 1),
+            (Some(key(UiKey::End, KeyModifiers::SHIFT)), "hij ", 3, 3),
+            (Some(key(UiKey::End, KeyModifiers::NONE)), "hij ", 3, 0),
+            (
+                Some(key(UiKey::Backspace, KeyModifiers::NONE)),
+                "ghi ",
+                3,
+                0,
+            ),
+            (
+                Some(key(UiKey::Character('a'), KeyModifiers::CONTROL)),
+                "ghi ",
+                3,
+                3,
+            ),
+            (Some(UiEvent::Paste(String::from("x"))), "x   ", 1, 0),
+        ] {
+            if let Some(event) = event {
+                let original = buffer.clone();
+                let view = TextInput::new(&buffer, |updated| updated)
+                    .layout(layout)
+                    .build();
+                let outcome = tree.dispatch(&view, &event, &renderer)?;
+                assert!(outcome.handled);
+                assert_eq!(outcome.messages.len(), 1);
+                assert_eq!(buffer, original);
+                let ignored = tree.prepare(&view, size, &mut renderer)?;
+                assert!(
+                    ignored.patch().is_empty(),
+                    "the application must adopt the update"
+                );
+                tree.discard(ignored, &mut renderer);
+                drop(view);
+                buffer = outcome
+                    .messages
+                    .into_iter()
+                    .next()
+                    .ok_or("missing update")?;
+            }
+            let view = TextInput::new(&buffer, |updated| updated)
+                .layout(layout)
+                .build();
+            let frame = tree.prepare(&view, size, &mut renderer)?;
+            frame
+                .patch()
+                .validate_for_width_policy(WidthPolicy::Unicode)?;
+            for run in &frame.patch().runs {
+                for (offset, cell) in run.cells.iter().enumerate() {
+                    row[usize::try_from(run.position.x)? + offset] = match &cell.content {
+                        PatchCellContent::Empty => String::from(" "),
+                        PatchCellContent::Grapheme { text, .. } => text.to_string(),
+                        PatchCellContent::Continuation { .. } => {
+                            return Err("unexpected ASCII continuation".into());
+                        }
+                    };
+                }
+            }
+            assert_eq!(row.concat(), expected, "{direction:?}, {buffer:?}");
+            assert_eq!(frame.patch().cursor.visibility, CursorVisibility::Visible);
+            assert_eq!(frame.patch().cursor.position, Point::new(cursor, 0));
+            for (x, cell) in frame.buffer().cells().iter().enumerate() {
+                assert_eq!(
+                    cell.style.modifiers.contains(Modifier::REVERSED),
+                    x < selected_columns
+                );
+            }
+            tree.commit(frame, &mut renderer)?;
+            // Commit new graphemes before comparing buffers so their IDs are shared.
+            let reference = tree.prepare_full(&view, size, &mut renderer)?;
+            assert_eq!(renderer.current(), reference.buffer());
+            assert_eq!(renderer.hit_map(), reference.hit_map());
+            assert!(reference.patch().is_empty());
+            tree.discard(reference, &mut renderer);
+            let input = tree.root().ok_or("missing input")?;
+            assert_eq!(tree.focused(), Some(input));
+            let children = tree.node(input).ok_or("missing input")?.children();
+            let spans = tree
+                .node(children[0])
+                .ok_or("missing text group")?
+                .children();
+            let current = (input, children.to_vec(), spans.to_vec());
+            assert_eq!(identities.get_or_insert(current.clone()), &current);
+            let settled = tree.prepare(&view, size, &mut renderer)?;
+            assert!(settled.patch().is_empty());
+            tree.discard(settled, &mut renderer);
         }
     }
     Ok(())
