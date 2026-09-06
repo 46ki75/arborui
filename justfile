@@ -18,6 +18,7 @@ lint:
 
 test:
     cargo test --workspace --all-features
+    cargo test --manifest-path fuzz/Cargo.toml --bin render_transactions --locked
 
 snapshot-review:
     cargo insta review
